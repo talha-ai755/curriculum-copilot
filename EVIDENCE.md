@@ -78,6 +78,51 @@ reproduces the schema faithfully.
 
 ---
 
+## How the app works (end-to-end flow)
+
+```
+ INPUTS                        PROCESS                                   OUTPUTS
+┌───────────────┐
+│ Curriculum PDF│──┐   ① split into page chunks
+│  (content)    │  │   ② Claude reads each chunk → structured JSON      ┌──────────────────────┐
+└───────────────┘  ├─► ③ merge chunks → one curriculum            ────► │ nodes.new.jsonl      │
+┌───────────────┐  │   ④ load framework (CASE) / synthesize codes       │ relationships.new... │
+│ CASE framework│──┘   ⑤ build graph (deterministic UUID5)              └──────────┬───────────┘
+│ (or bundled)  │      ⑥ validate: 0 dangling, coverage report                    │
+└───────────────┘                                                                  ▼
+                        ⑦ 💬 Chat: serialize graph → Claude answers, grounded, cites Topic + TEKS
+```
+
+**Step by step** (files: `app.py` UI, `pdf_to_kg.py` logic):
+
+1. **Ingest** — user uploads a curriculum **PDF** and, optionally, a **CASE** framework file
+   (or ticks the bundled TEKS). `split_pdf()` cuts the PDF into ~15-page chunks (each well
+   under the 32 MB inline limit).
+2. **Extract** *(Claude)* — `extract_chunk()` sends each chunk to `claude-opus-4-8` with a
+   fixed JSON schema (`output_config.format`) and gets back the module, topics, standard
+   codes, learning outcomes, and assessments for those pages.
+3. **Merge** — `merge()` folds all chunks into one curriculum, de-duping by
+   module/topic/code.
+4. **Framework** — `load_case()` parses the CASE file into the real standards backbone
+   (items + hierarchy + cross-grade links); extracted descriptions are enriched from it. With
+   no file, standards are synthesized from the bare PDF codes.
+5. **Build graph** *(plain code)* — `build_graph()` emits Learning-Commons-schema nodes and
+   edges with deterministic UUID5 IDs: content via `hasPart`, standards via `hasChild`,
+   joined by `hasEducationalAlignment` / `supports`. Alignments resolve each code to the real
+   `caseIdentifierUUID`.
+6. **Validate** — the app runs a dangling-endpoint check (must be 0) and shows framework
+   coverage (e.g. "10/10 codes matched"). The two `.jsonl` files are downloadable.
+7. **Chat** *(Claude)* — `graph_context()` serializes the built graph; `answer_question()`
+   sends it plus the user's question to Claude with a grounded prompt that cites the Topic and
+   TEKS codes and refuses to invent lesson content it doesn't have.
+
+**Where the AI is:** only steps ② and ⑦ (reading the PDF, answering questions). Everything
+structural — IDs, edges, code matching, validation — is deterministic Python that never
+guesses. That split is why most of the pipeline is verifiable offline (see below) and only
+those two steps need an API key.
+
+---
+
 ## Evidence 1 — Same two-file format
 Both graphs are **JSONL**: one JSON object per line, split into a `nodes` file and a
 `relationships` file. `type` is `"node"` or `"relationship"` on every record. ✔️

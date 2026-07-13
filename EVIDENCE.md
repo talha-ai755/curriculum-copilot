@@ -12,6 +12,72 @@ field, against the real Learning Commons `nodes.jsonl` (247,324 nodes) and
 
 ---
 
+## How we reverse-engineered the Learning Commons schema
+
+We were given two raw files (`nodes.jsonl`, `relationships.jsonl`) with no documentation.
+We recovered the full schema — record shape, label vocabulary, ID rules, and the alignment
+mechanism — by inspecting the data directly. Each finding then became a rule in the builder
+(`pdf_to_kg.py`).
+
+**Step 1 — Inspect a raw record.** Read the first lines of each file.
+- *Found:* a node is `{"type":"node","identifier":…,"labels":[…],"properties":{…}}`; a
+  relationship is `{"type":"relationship","identifier":…,"label":…,"properties":{…},
+  "source_identifier":…,"source_labels":[…],"target_identifier":…,"target_labels":[…]}`.
+- *→ Builder rule:* `node()` and `rel()` emit exactly these key sets.
+
+**Step 2 — Count the vocabulary.** One pass tallying `labels[0]` over all nodes and `label`
+over all edges.
+- *Found:* **8 node types** (`StandardsFrameworkItem` 222k, `LearningComponent`, `Activity`,
+  `Assessment`, `Lesson`, `LessonGrouping`, `StandardsFramework`, `Course`) and **10 edge
+  types** (`hasChild` 223k, `supports`, `hasEducationalAlignment`, `hasStandardAlignment`,
+  `hasPart`, `buildsTowards`, `hasReference`, `relatesTo`, `hasDependency`,
+  `mutuallyExclusiveWith`).
+- *→ Builder rule:* only ever emit labels from these sets.
+
+**Step 3 — Recover the meta-schema.** Tally each edge as `(source_label, edge, target_label)`.
+- *Found:* the two-sided shape — `StandardsFrameworkItem -hasChild-> StandardsFrameworkItem`
+  (the standards hierarchy), `Lesson -hasEducationalAlignment-> StandardsFrameworkItem` and
+  `LearningComponent -supports-> StandardsFrameworkItem` (the bridge), `Lesson -hasPart->
+  Activity/Assessment` (content structure).
+- *→ Builder rule:* build content with `hasPart`, standards with `hasChild`, and join them
+  with `hasEducationalAlignment` / `supports`.
+
+**Step 4 — Read the fields.** Dumped one example of every node label and every edge label to
+list their property keys.
+- *Found:* common properties `provider`, `author`, `license`, `attributionStatement`,
+  `inLanguage`; standards carry `caseIdentifierUUID`/`caseIdentifierURI`/`jurisdiction`;
+  each edge carries `sourceEntityKey` and `targetEntityKey`.
+- *→ Builder rule:* stamp those properties on every record.
+
+**Step 5 — Crack the ID scheme.** Fed a couple of `identifier` values to
+`uuid.UUID(x).version`.
+- *Found:* **version 5** — i.e. deterministic, name-based UUIDs (SHA-1 of a namespace + a
+  string), not random. Same input → same ID, forever.
+- *→ Builder rule:* generate every ID as `uuid5(NS, "<kind>|<native-key>")`, which makes
+  rebuilds idempotent and lets an edge reference a node by recomputing its ID.
+
+**Step 6 — Find the two key fields.** Inspected `sourceEntityKey`/`targetEntityKey` on each
+edge type and a full `StandardsFrameworkItem` record.
+- *Found:* content nodes are matched by `identifier`, standards by `caseIdentifierUUID` —
+  and every edge states which key each end uses (e.g. alignment = `identifier` →
+  `caseIdentifierUUID`). Also: for standards, `identifier` ≠ `caseIdentifierUUID`, and edges
+  reference the node's `identifier`.
+- *→ Builder rule:* alignment edges target `caseIdentifierUUID`; and when extracting the
+  framework from the graph we translate edge endpoints via an `identifier → caseIdentifierUUID`
+  map (see `case_from_graph.py`).
+
+**Step 7 — Decode the standards codes.** The textbook prints `7.4D`; the graph stores
+`statementCode` like `111.27.b.4.D` with `gradeLevel`. Sampling grade-7 items revealed the
+pattern: §111.`<sec>` is a grade, and the tail after `.b.` is knowledge-skill + expectation.
+- *Found:* `111.27` = Grade 7, so `111.27.b.4.D` → `7.4D`.
+- *→ Builder rule:* `human_code()` in `case_from_graph.py` converts chapter codes to the
+  textbook form so PDF codes match framework items.
+
+The result of Steps 1–7 is the builder in `pdf_to_kg.py`; the checks below confirm it
+reproduces the schema faithfully.
+
+---
+
 ## Evidence 1 — Same two-file format
 Both graphs are **JSONL**: one JSON object per line, split into a `nodes` file and a
 `relationships` file. `type` is `"node"` or `"relationship"` on every record. ✔️

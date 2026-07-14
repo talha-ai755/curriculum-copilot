@@ -113,6 +113,45 @@ def answer_question(client, context, question):
     return next(b.text for b in msg.content if b.type == "text")
 
 
+def prior_grade_paths(nodes, rels):
+    """Walk the graph's progression edges to find, for each standard the module teaches, the
+    earlier-grade standard it builds on: TX -hasStandardAlignment-> CCSS -buildsTowards->
+    CCSS -hasStandardAlignment-> TX(lower grade). Returns [(from_code, to_grade, to_code,
+    to_desc)]."""
+    import collections
+    N = {n["identifier"]: n["properties"] for n in nodes}
+    align, nxt, taught = collections.defaultdict(set), collections.defaultdict(set), set()
+    for r in rels:
+        s, t = r["source_identifier"], r["target_identifier"]
+        if r["label"] == "hasStandardAlignment":
+            align[s].add(t); align[t].add(s)
+        elif r["label"] == "buildsTowards":
+            nxt[s].add(t); nxt[t].add(s)                 # walk the chain either direction
+        elif r["label"] == "hasEducationalAlignment" and r["target_labels"][0] == "StandardsFrameworkItem":
+            taught.add(t)
+
+    def grade(uid):
+        c = (N.get(uid, {}).get("code") or "").split(".")[0]
+        return int(c) if c.isdigit() else None
+
+    out, seen = [], set()
+    for tx in taught:
+        p = N.get(tx, {})
+        g = grade(tx)
+        if p.get("jurisdiction") != "Texas" or g is None:
+            continue
+        for ms in align[tx]:                             # TX -> CCSS (same grade)
+            for ms2 in nxt[ms]:                          # CCSS -> CCSS (adjacent grade)
+                for tx2 in align[ms2]:                   # CCSS -> back to TX
+                    q, g2 = N.get(tx2, {}), grade(tx2)
+                    if q.get("jurisdiction") == "Texas" and g2 is not None and g2 < g:
+                        key = (p.get("code"), q.get("code"))
+                        if key not in seen:
+                            seen.add(key)
+                            out.append((p.get("code"), g2, q.get("code"), q.get("description", "")))
+    return sorted(out)
+
+
 # ── Page ────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Curriculum → Knowledge Graph", page_icon="🧭", layout="wide")
 st.title("🧭 Curriculum → Knowledge Graph")
@@ -252,14 +291,28 @@ if "result" in st.session_state:
 
     tab_chat, tab_extract, tab_download = st.tabs(["💬 Chat", "📋 Extraction", "⬇ Download"])
 
+    priors = prior_grade_paths(nodes, rels)   # vertical alignment via the Common Core bridge
+
     with tab_chat:
         st.caption("Test the copilot — ask questions the way a teacher would. Answers are "
                    "grounded in the graph you just built. Needs a Claude API key (sidebar).")
+
+        if priors:
+            with st.expander(f"🔻 Prior-grade connections ({len(priors)}) — what each skill builds on"):
+                st.caption("Traced through the Common Core bridge: TEKS → CCSS → earlier-grade "
+                           "CCSS → earlier-grade TEKS.")
+                for fc, g2, tc, td in priors:
+                    st.markdown(f"**{fc}** builds on **Grade {g2} · {tc}** — "
+                                f"{(td[:90] + '…') if len(td) > 90 else td}")
+        else:
+            st.caption("💡 Load the bundled TEKS framework (sidebar) to unlock prior-grade "
+                       "connections.")
+
         with st.expander("🔎 What the assistant can see (grounding context)"):
             st.code(graph_context(module, topics, standards, assessments), language="text")
         examples = [
             "Which topics cover TEKS 7.4D?",
-            "How was proportional reasoning built across the topics in this module?",
+            "How was 7.4D taught in a prior grade?",
             "My students bombed the Topic 1 assessment — what standards should I re-teach?",
             "What is the most critical takeaway of Topic 1?",
         ]
@@ -282,6 +335,10 @@ if "result" in st.session_state:
             else:
                 import anthropic
                 ctx = graph_context(module, topics, standards, assessments)
+                if priors:
+                    ctx += "\n\nPRIOR-GRADE LINKS (how each standard connects to earlier grades):\n" \
+                        + "\n".join(f"- {fc} builds on Grade {g2} {tc}: {td}"
+                                    for fc, g2, tc, td in priors)
                 with st.chat_message("assistant"):
                     with st.spinner("Thinking…"):
                         try:

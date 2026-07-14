@@ -163,7 +163,8 @@ def load_case(data):
         if not uid:
             continue
         code, stmt = it.get("humanCodingScheme") or "", it.get("fullStatement") or ""
-        by_uuid[uid] = {"code": code, "statement": stmt}
+        by_uuid[uid] = {"code": code, "statement": stmt,
+                        "jurisdiction": it.get("jurisdiction") or ""}
         if code:
             code_to_uuid[_norm_code(code)] = uid
             code_to_stmt[_norm_code(code)] = stmt
@@ -182,6 +183,7 @@ def load_case(data):
 # CASE association types -> our edge labels (isChildOf handled specially as hasChild)
 _ASSOC_EDGE = {"isRelatedTo": "relatesTo", "isPeerOf": "relatesTo",
                "precedes": "buildsTowards", "isPrerequisiteFor": "buildsTowards",
+               "isStandardAlignedTo": "hasStandardAlignment",   # cross-framework crosswalk
                "exemplar": "hasReference"}
 
 
@@ -219,12 +221,12 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
     readiness = set().union(*(t["readiness"] for t in topics.values())) if topics else set()
     emitted_std = set()
 
-    def ensure_std(uid, code="", stmt=""):
+    def ensure_std(uid, code="", stmt="", juris=None):
         if uid in emitted_std:
             return
         emitted_std.add(uid)
         node(uid, "StandardsFrameworkItem", description=stmt or code or "", code=code,
-             jurisdiction=jurisdiction, academicSubject="Mathematics",
+             jurisdiction=juris or jurisdiction, academicSubject="Mathematics",
              readinessStandard=str(code in readiness).lower(), caseIdentifierUUID=uid)
 
     # ── standards backbone ───────────────────────────────────────────────────
@@ -233,7 +235,7 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
         node(fw_id, "StandardsFramework", name=case["framework"]["title"],
              academicSubject="Mathematics", jurisdiction=jurisdiction, caseIdentifierUUID=fw_id)
         for uid, it in case["by_uuid"].items():          # full framework from the CASE file
-            ensure_std(uid, it["code"], it["statement"])
+            ensure_std(uid, it["code"], it["statement"], it.get("jurisdiction"))
         for atype, o, d in case["assocs"]:               # hierarchy + cross-grade links
             if o not in emitted_std or d not in emitted_std:
                 continue

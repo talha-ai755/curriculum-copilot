@@ -14,10 +14,8 @@ Inputs (already downloaded):
 Output:
   teks_math_case.json               official base + progression (what the app loads)
 """
+import argparse
 import json
-
-OFFICIAL = "teks_math_OFFICIAL.json"
-OUT = "teks_math_case.json"
 
 
 def textbook_code(official_hcs, grade):
@@ -40,6 +38,13 @@ def one_grade(gl):
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--official", default="teks_math_OFFICIAL.json",
+                    help="official Texas Gateway CASE package for the subject")
+    ap.add_argument("--out", default="teks_math_case.json", help="merged framework output")
+    args = ap.parse_args()
+    OFFICIAL, OUT = args.official, args.out
+
     # ── 1. OFFICIAL base: TEKS items + hierarchy (canonical, complete) ──────────
     off = json.load(open(OFFICIAL))
     doc = {"identifier": off["CFDocument"]["identifier"],

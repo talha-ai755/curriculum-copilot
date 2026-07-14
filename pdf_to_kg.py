@@ -132,7 +132,8 @@ def combine_modules(chunk_lists, jurisdiction, framework, case, course_name=None
                         stt = case["code_to_stmt"].get(_norm_code(c))
                         if stt:
                             standards[c] = stt
-        n, r = build_graph(module, topics, standards, assessments, jurisdiction, framework, case)
+        n, r = build_graph(module, topics, standards, assessments, jurisdiction, framework, case,
+                           scope=course_name or "")
         for x in n:
             if x["identifier"] not in seen_n:
                 seen_n.add(x["identifier"]); nodes.append(x)
@@ -244,15 +245,21 @@ _ASSOC_EDGE = {"isRelatedTo": "relatesTo", "isPeerOf": "relatesTo",
 
 
 # ── Graph builder (deterministic UUID5, matches the existing graph schema) ────
-def build_graph(module, topics, standards, assessments, jurisdiction, framework, case=None):
+def build_graph(module, topics, standards, assessments, jurisdiction, framework, case=None,
+                scope=""):
     """Build nodes/edges. If `case` (a loaded CASE file) is given, the standards side is the
     real framework — full descriptions, hierarchy (hasChild), and cross-grade links — and
     lessons attach to those real standard nodes by matching codes. Without it, standards are
-    synthesized from the bare codes seen in the PDF."""
+    synthesized from the bare codes seen in the PDF.
+
+    `scope` namespaces the CONTENT ids (Module/Topic/Assessment/LearningComponent) so the same
+    module number in different grades/courses doesn't collide when graphs are merged. Standards
+    ids are never scoped — they stay shared across grades."""
     nodes, rels = [], []
 
     def nid(kind, key):
-        return "yo:" + str(uuid.uuid5(NS, f"{kind}|{key}"))
+        base = f"{scope}|{kind}|{key}" if scope else f"{kind}|{key}"
+        return "yo:" + str(uuid.uuid5(NS, base))
 
     def case_uuid(code):
         return str(uuid.uuid5(NS, f"CASE|{framework}|{code}"))

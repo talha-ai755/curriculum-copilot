@@ -42,6 +42,22 @@ if "merged" in st.session_state:
     if courses:
         st.write("Grades in this graph:", ", ".join(sorted(courses)))
 
+    # ── prior-grade coverage: the cross-grade payoff of merging ──────────────
+    st.subheader("🔻 Prior-grade coverage")
+    priors = mg.prior_grade_links(nodes, rels)
+    if priors:
+        st.metric("Skills with a real prior-grade lesson", len(priors),
+                  help="A standard taught in one grade whose earlier-grade prerequisite is "
+                       "ALSO taught by real content in a lower grade — so 'how was this taught "
+                       "before?' lands on an actual lesson.")
+        st.dataframe(
+            [{"This grade": f"Grade {g} · {fc}", "builds on": f"Grade {g2} · {tc}"}
+             for fc, g, tc, g2 in priors],
+            use_container_width=True, hide_index=True)
+    else:
+        st.info("No cross-grade lesson links yet — add another grade's content (each grade's "
+                "lessons need to land on the standards the progression connects).")
+
     st.download_button("⬇ merged nodes.jsonl", "\n".join(json.dumps(n) for n in nodes.values()),
                        file_name="nodes.jsonl", use_container_width=True)
     st.download_button("⬇ merged relationships.jsonl",

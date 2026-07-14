@@ -42,6 +42,50 @@ def dangling_count(nodes, rels):
                for k in ("source_identifier", "target_identifier") if r[k] not in ids)
 
 
+def prior_grade_links(nodes, rels):
+    """Cross-grade payoff: standards taught by content whose prior-grade skill is ALSO taught
+    by content in a lower grade (via crosswalk → buildsTowards → crosswalk). Grade is read
+    from each standard's own code (7.4D → 7), so it works for any build. Returns
+    [(from_code, from_grade, to_code, to_grade)]."""
+    import collections
+
+    def props(uid):
+        return (nodes.get(uid, {}) or {}).get("properties", {}) or {}
+
+    def grade(uid):
+        c = (props(uid).get("code") or "").split(".")[0]
+        return int(c) if c.isdigit() else None
+
+    taught = set()
+    align, nxt = collections.defaultdict(set), collections.defaultdict(set)
+    for r in rels.values():
+        if r["label"] == "hasEducationalAlignment" and r["target_labels"][0] == "StandardsFrameworkItem":
+            taught.add(r["target_identifier"])
+        elif r["label"] == "hasStandardAlignment":
+            align[r["source_identifier"]].add(r["target_identifier"])
+            align[r["target_identifier"]].add(r["source_identifier"])
+        elif r["label"] == "buildsTowards":
+            nxt[r["source_identifier"]].add(r["target_identifier"])
+            nxt[r["target_identifier"]].add(r["source_identifier"])
+
+    out, seen = [], set()
+    for s in taught:
+        g = grade(s)
+        if g is None:
+            continue
+        for ms in align[s]:
+            for ms2 in nxt[ms]:
+                for s2 in align[ms2]:
+                    if s2 in taught:
+                        g2 = grade(s2)
+                        if g2 is not None and g2 < g:
+                            key = (props(s).get("code"), props(s2).get("code"))
+                            if key not in seen:
+                                seen.add(key)
+                                out.append((props(s).get("code"), g, props(s2).get("code"), g2))
+    return sorted(out)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("files", nargs="+", help="nodes.jsonl / relationships.jsonl files (any order)")

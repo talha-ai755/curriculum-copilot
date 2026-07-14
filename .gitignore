@@ -20,3 +20,4 @@ __pycache__/
 venv/
 .streamlit/secrets.toml
 .DS_Store
+.batch_state.json

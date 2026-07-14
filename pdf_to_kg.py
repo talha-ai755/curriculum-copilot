@@ -90,24 +90,80 @@ def split_pdf(path, pages_per_chunk):
         yield start + 1, end, base64.standard_b64encode(buf.getvalue()).decode()
 
 
-def extract_chunk(client, b64, page_label):
-    """One structured-extraction call over a page-range chunk."""
-    with client.messages.stream(
-        model=MODEL,
-        max_tokens=16000,
-        thinking={"type": "adaptive"},
-        system=SYSTEM,
+def chunk_message_params(b64, page_label):
+    """The Messages-API params for one extraction chunk — shared by streaming and Batch."""
+    return dict(
+        model=MODEL, max_tokens=16000, thinking={"type": "adaptive"}, system=SYSTEM,
         output_config={"format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA}},
         messages=[{"role": "user", "content": [
             {"type": "document", "source": {
                 "type": "base64", "media_type": "application/pdf", "data": b64}},
             {"type": "text", "text":
                 f"Extract the curriculum structure from these pages ({page_label})."},
-        ]}],
-    ) as stream:
-        msg = stream.get_final_message()
+        ]}])
+
+
+def parse_extraction(msg):
+    """Pull the structured JSON out of a completed message (streaming or batch result)."""
     text = next(b.text for b in msg.content if b.type == "text")
     return json.loads(text)
+
+
+def extract_chunk(client, b64, page_label):
+    """One structured-extraction call over a page-range chunk (interactive/streaming)."""
+    with client.messages.stream(**chunk_message_params(b64, page_label)) as stream:
+        return parse_extraction(stream.get_final_message())
+
+
+def combine_modules(chunk_lists, jurisdiction, framework, case, course_name=None):
+    """Merge several modules' chunk-lists into ONE deduped graph. Each list is the chunks for
+    one PDF/module. Shared standards collapse by ID; optionally add a Course that hasPart-links
+    every module."""
+    nodes, rels, seen_n, seen_r = [], [], set(), set()
+    module_ids = []
+    for chunks in chunk_lists:
+        if not chunks:
+            continue
+        module, topics, standards, assessments = merge(chunks)
+        if case:                                   # enrich descriptions from the framework
+            for t in topics.values():
+                for c in t["teks"]:
+                    if not standards.get(c):
+                        stt = case["code_to_stmt"].get(_norm_code(c))
+                        if stt:
+                            standards[c] = stt
+        n, r = build_graph(module, topics, standards, assessments, jurisdiction, framework, case)
+        for x in n:
+            if x["identifier"] not in seen_n:
+                seen_n.add(x["identifier"]); nodes.append(x)
+        for x in r:
+            if x["identifier"] not in seen_r:
+                seen_r.add(x["identifier"]); rels.append(x)
+        mid = next((x["identifier"] for x in n if x["labels"][0] == "LessonGrouping"
+                    and x["properties"].get("groupName") == "Module"), None)
+        if mid:
+            module_ids.append(mid)
+
+    if course_name and module_ids:
+        cid = "yo:" + str(uuid.uuid5(NS, f"Course|{course_name}"))
+        nodes.append({"type": "node", "identifier": cid, "labels": ["Course"],
+                      "properties": {"identifier": cid, "name": course_name, "provider": PROVIDER,
+                                     "author": AUTHOR, "license": LICENSE,
+                                     "attributionStatement": ATTRIB, "inLanguage": "en-US",
+                                     "academicSubject": "Mathematics", "curriculumLabel": "Course"}})
+        for mid in module_ids:
+            rid = str(uuid.uuid5(NS, f"hasPart|{cid}|{mid}"))
+            if rid not in seen_r:
+                seen_r.add(rid)
+                rels.append({"type": "relationship", "identifier": rid, "label": "hasPart",
+                             "properties": {"identifier": rid, "relationshipType": "hasPart",
+                                            "provider": PROVIDER, "sourceEntity": "Course",
+                                            "targetEntity": "LessonGrouping",
+                                            "sourceEntityKey": "identifier",
+                                            "targetEntityKey": "identifier"},
+                             "source_identifier": cid, "source_labels": ["Course"],
+                             "target_identifier": mid, "target_labels": ["LessonGrouping"]})
+    return nodes, rels
 
 
 def merge(chunks):

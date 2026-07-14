@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Batch Build — ingest MANY curriculum PDFs at once via the Claude Batch API (50% cheaper).
+Batch Build — ingest MANY curriculum PDFs at once via the Claude Batch API (~50% cheaper).
 
-Flow: upload all module PDFs → submit ONE batch of every page-chunk → let it run
-(minutes, async) → build a single merged graph (modules deduped onto the shared TEKS
-backbone, tied under a Course node). Batch state is saved to disk so you can close the
-tab and come back.
+Flow: upload all module PDFs → submit the page-chunks as one or more size-capped batches
+→ let them run (async) → build a single merged graph (modules deduped onto the shared TEKS
+backbone, tied under a Course node). Batch state is saved to disk so you can close the tab.
+
+Note: chunks are base64 PDFs, so a whole grade is hundreds of MB. A single batch request
+can't carry that, so we split submissions into ~SIZE_CAP-sized batches automatically.
 """
 import base64
 import io
@@ -16,8 +18,9 @@ import streamlit as st
 
 import pdf_to_kg as p2k
 
-STATE_FILE = ".batch_state.json"          # survives reruns / restarts
+STATE_FILE = ".batch_state.json"
 BUNDLED_CASE = "teks_math_case.json"
+SIZE_CAP = 24_000_000                       # ~24 MB of base64 per batch request
 
 st.set_page_config(page_title="Batch Build", page_icon="📦", layout="wide")
 st.title("📦 Batch Build — many PDFs at once")
@@ -43,7 +46,6 @@ def clear_state():
         os.remove(STATE_FILE)
 
 
-# ── sidebar config ──────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("Settings")
     api_key = st.text_input("Claude API key", type="password",
@@ -73,87 +75,97 @@ if not state:
     files = st.file_uploader("Curriculum PDFs (all modules)", type="pdf",
                              accept_multiple_files=True)
     if files:
-        # count chunks up front (cost preview)
         import pypdf
-        total_chunks, per = 0, []
+        per, total_chunks = [], 0
         for f in files:
             n = len(pypdf.PdfReader(io.BytesIO(f.getvalue())).pages)
-            c = -(-n // pages_per_chunk)          # ceil
+            c = -(-n // pages_per_chunk)
             per.append((f.name, n, c)); total_chunks += c
-        st.write("**Will submit:**")
         st.table({"file": [p[0] for p in per], "pages": [p[1] for p in per],
                   "chunks": [p[2] for p in per]})
-        st.info(f"**{total_chunks} chunks** across {len(files)} PDFs → one batch "
-                f"(~50% cheaper than interactive).")
+        st.info(f"**{total_chunks} chunks** across {len(files)} PDFs → submitted as "
+                f"size-capped batches (~50% cheaper than interactive).")
 
-        if st.button("🚀 Submit batch", type="primary", disabled=not api_key,
+        if st.button("🚀 Submit", type="primary", disabled=not api_key,
                      use_container_width=True):
             from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
             from anthropic.types.messages.batch_create_params import Request
-            reqs, names = [], []
-            with st.spinner("Splitting PDFs and submitting…"):
-                for pi, f in enumerate(files):
-                    names.append(f.name)
-                    reader = pypdf.PdfReader(io.BytesIO(f.getvalue()))
-                    n = len(reader.pages)
-                    for start in range(0, n, pages_per_chunk):
-                        end = min(start + pages_per_chunk, n)
-                        w = pypdf.PdfWriter()
-                        for i in range(start, end):
-                            w.add_page(reader.pages[i])
-                        buf = io.BytesIO(); w.write(buf)
-                        b64 = base64.standard_b64encode(buf.getvalue()).decode()
-                        params = p2k.chunk_message_params(b64, f"pages {start + 1}-{end}")
-                        reqs.append(Request(custom_id=f"{pi}_{start}_{end}",
-                                            params=MessageCreateParamsNonStreaming(**params)))
-                batch = client().messages.batches.create(requests=reqs)
-            save_state({"batch_id": batch.id, "names": names, "framework": framework,
+            cli = client()
+            names, batch_ids = [f.name for f in files], []
+            group, gsize, done = [], 0, 0     # a size-capped batch under construction
+            prog = st.progress(0.0, "Splitting & submitting…")
+            for pi, f in enumerate(files):
+                reader = pypdf.PdfReader(io.BytesIO(f.getvalue()))
+                n = len(reader.pages)
+                for start in range(0, n, pages_per_chunk):
+                    end = min(start + pages_per_chunk, n)
+                    w = pypdf.PdfWriter()
+                    for i in range(start, end):
+                        w.add_page(reader.pages[i])
+                    buf = io.BytesIO(); w.write(buf)
+                    b64 = base64.standard_b64encode(buf.getvalue()).decode()
+                    if group and gsize + len(b64) > SIZE_CAP:   # flush before adding
+                        batch_ids.append(cli.messages.batches.create(requests=group).id)
+                        group, gsize = [], 0
+                    params = p2k.chunk_message_params(b64, f"pages {start + 1}-{end}")
+                    group.append(Request(custom_id=f"{pi}_{start}_{end}",
+                                         params=MessageCreateParamsNonStreaming(**params)))
+                    gsize += len(b64); done += 1
+                    prog.progress(done / total_chunks, f"prepared {done}/{total_chunks} chunks")
+            if group:
+                batch_ids.append(cli.messages.batches.create(requests=group).id)
+            save_state({"batches": batch_ids, "names": names, "framework": framework,
                         "jurisdiction": jurisdiction, "course": course_name})
-            st.success(f"Submitted batch `{batch.id}` — {len(reqs)} requests. "
-                       "Come back and refresh; most batches finish within an hour.")
+            st.success(f"Submitted {len(batch_ids)} batch(es), {total_chunks} requests. "
+                       "Come back and refresh — most finish within an hour.")
             st.rerun()
     else:
         st.info("Upload the module PDFs (e.g. all 5 Grade 7 math modules) to begin.")
 
-# ── active batch → status + build ───────────────────────────────────────────
+# ── active batch(es) → status + build ───────────────────────────────────────
 else:
-    st.write(f"**Active batch:** `{state['batch_id']}`  ·  {len(state['names'])} PDFs")
+    st.write(f"**Active:** {len(state['batches'])} batch(es) · {len(state['names'])} PDFs")
     st.caption("Files: " + ", ".join(state["names"]))
     c1, c2, c3 = st.columns(3)
     refresh = c1.button("🔄 Refresh status", use_container_width=True)
-    build = c2.button("🔨 Build graph from results", type="primary", use_container_width=True)
-    if c3.button("🗑 Clear / new batch", use_container_width=True):
+    build = c2.button("🔨 Build graph", type="primary", use_container_width=True)
+    if c3.button("🗑 Clear / new", use_container_width=True):
         clear_state(); st.rerun()
 
     if (refresh or build) and not api_key:
         st.warning("Enter your Claude API key in the sidebar.")
     elif refresh or build:
-        b = client().messages.batches.retrieve(state["batch_id"])
-        counts = b.request_counts
-        st.write(f"**Status:** `{b.processing_status}`  ·  "
-                 f"✅ {counts.succeeded}  ⏳ {counts.processing}  ❌ {counts.errored}")
-        if b.processing_status != "ended":
+        cli = client()
+        statuses, succ, proc, err = [], 0, 0, 0
+        for bid in state["batches"]:
+            b = cli.messages.batches.retrieve(bid)
+            statuses.append(b.processing_status)
+            succ += b.request_counts.succeeded; proc += b.request_counts.processing
+            err += b.request_counts.errored
+        all_ended = all(s == "ended" for s in statuses)
+        st.write(f"**Status:** {sum(s=='ended' for s in statuses)}/{len(statuses)} batches ended · "
+                 f"✅ {succ}  ⏳ {proc}  ❌ {err}")
+        if not all_ended:
             st.info("Still processing — refresh again shortly.")
         elif build:
             with st.spinner("Collecting results and building the graph…"):
                 by_pdf = [[] for _ in state["names"]]
-                errs = 0
-                for res in client().messages.batches.results(state["batch_id"]):
-                    if res.result.type == "succeeded":
-                        try:
-                            data = p2k.parse_extraction(res.result.message)
-                            pi = int(res.custom_id.split("_")[0])
-                            by_pdf[pi].append(data)
-                        except Exception:
-                            errs += 1
-                    else:
-                        errs += 1
-                case = load_case()
+                skipped = 0
+                for bid in state["batches"]:
+                    for res in cli.messages.batches.results(bid):
+                        if res.result.type == "succeeded":
+                            try:
+                                data = p2k.parse_extraction(res.result.message)
+                                by_pdf[int(res.custom_id.split("_")[0])].append(data)
+                            except Exception:
+                                skipped += 1
+                        else:
+                            skipped += 1
                 nodes, rels = p2k.combine_modules(by_pdf, jurisdiction, framework,
-                                                  case, state.get("course"))
+                                                  load_case(), state.get("course"))
             st.session_state["batch_graph"] = (nodes, rels)
-            if errs:
-                st.warning(f"{errs} chunks failed and were skipped.")
+            if skipped:
+                st.warning(f"{skipped} chunks failed and were skipped.")
             st.success(f"Built graph: {len(nodes)} nodes, {len(rels)} edges.")
 
 # ── show / download the built graph ─────────────────────────────────────────

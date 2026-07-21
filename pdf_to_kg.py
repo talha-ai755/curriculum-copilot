@@ -348,6 +348,7 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
         for i, outcome in enumerate(t["outcomes"]):
             lc_id = nid("LearningComponent", f"{module['number']}:{key}:{i}")
             node(lc_id, "LearningComponent", description=outcome, academicSubject="Mathematics")
+            rel("hasPart", top_id, "LessonGrouping", lc_id, "LearningComponent")
             for code in sorted(t["teks"]):
                 rel("supports", lc_id, "LearningComponent",
                     resolve(code), "StandardsFrameworkItem", t_key="caseIdentifierUUID")

@@ -53,7 +53,8 @@ with st.sidebar:
     framework = st.text_input("Standards framework", value="TEKS")
     jurisdiction = st.text_input("Jurisdiction", value="Texas")
     pages_per_chunk = st.slider("Pages per chunk", 5, 30, 15)
-    course_name = st.text_input("Course name (ties modules together)", value="Grade 7 Mathematics")
+    course_name = st.text_input("Course name (ties modules together)", value="",
+                                placeholder="e.g. Algebra I, Grade 7 Mathematics")
     use_bundled = st.checkbox("Use bundled TEKS framework", value=os.path.exists(BUNDLED_CASE))
 
 
@@ -86,7 +87,7 @@ if not state:
         st.info(f"**{total_chunks} chunks** across {len(files)} PDFs → submitted as "
                 f"size-capped batches (~50% cheaper than interactive).")
 
-        if st.button("🚀 Submit", type="primary", disabled=not api_key,
+        if st.button("🚀 Submit", type="primary", disabled=not api_key or not course_name.strip(),
                      use_container_width=True):
             from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
             from anthropic.types.messages.batch_create_params import Request

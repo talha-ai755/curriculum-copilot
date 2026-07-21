@@ -18,15 +18,27 @@ import argparse
 import json
 
 
+# Texas HS course TEKS live under "c" (Knowledge and skills), not "b" (Introduction) like
+# grade-level TEKS, and use a fixed letter prefix instead of a numeric grade. Textbooks cite
+# these as e.g. "A.6A" for Algebra I -- confirmed against real Algebra I Teacher Edition PDFs.
+COURSE_PREFIX = {
+    "111.39": "A",     # Algebra I
+}
+
+
 def textbook_code(official_hcs, grade):
-    """111.27.b.4.D + grade '7' -> '7.4D'.  '' if not convertible."""
-    if not grade:
-        return ""
+    """111.27.b.4.D + grade '7' -> '7.4D'.  111.39.c.6.A -> 'A.6A' (course, via COURSE_PREFIX).
+    '' if not convertible."""
     parts = official_hcs.split(".")
-    if "b" not in parts:
-        return ""
-    tail = parts[parts.index("b") + 1:]          # ['4','D'] or ['4']
-    return f"{grade}.{''.join(tail)}" if tail else ""
+    if "b" in parts and grade:
+        tail = parts[parts.index("b") + 1:]      # ['4','D'] or ['4']
+        return f"{grade}.{''.join(tail)}" if tail else ""
+    if "c" in parts:
+        prefix = COURSE_PREFIX.get(".".join(parts[:2]))
+        if prefix:
+            tail = parts[parts.index("c") + 1:]
+            return f"{prefix}.{''.join(tail)}" if tail else ""
+    return ""
 
 
 def one_grade(gl):

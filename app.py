@@ -113,11 +113,15 @@ def answer_question(client, context, question):
     return next(b.text for b in msg.content if b.type == "text")
 
 
+GRADE_ORDER = ["K", "1", "2", "3", "4", "5", "6", "7", "8",
+               "A", "G", "2A", "P", "MMA", "AQR", "DM", "S", "AR"]
+
+
 def prior_grade_paths(nodes, rels):
     """Walk the graph's progression edges to find, for each standard the module teaches, the
-    earlier-grade standard it builds on: TX -hasStandardAlignment-> CCSS -buildsTowards->
-    CCSS -hasStandardAlignment-> TX(lower grade). Returns [(from_code, to_grade, to_code,
-    to_desc)]."""
+    earlier-grade standard it builds on: TX -hasStandardAlignment-> CCSS -buildsTowards/
+    relatesTo-> CCSS -hasStandardAlignment-> TX(lower grade). Returns [(from_code, to_grade,
+    to_code, to_desc)]."""
     import collections
     N = {n["identifier"]: n["properties"] for n in nodes}
     align, nxt, taught = collections.defaultdict(set), collections.defaultdict(set), set()
@@ -125,14 +129,14 @@ def prior_grade_paths(nodes, rels):
         s, t = r["source_identifier"], r["target_identifier"]
         if r["label"] == "hasStandardAlignment":
             align[s].add(t); align[t].add(s)
-        elif r["label"] == "buildsTowards":
+        elif r["label"] in ("buildsTowards", "relatesTo"):
             nxt[s].add(t); nxt[t].add(s)                 # walk the chain either direction
         elif r["label"] == "hasEducationalAlignment" and r["target_labels"][0] == "StandardsFrameworkItem":
             taught.add(t)
 
     def grade(uid):
         c = (N.get(uid, {}).get("code") or "").split(".")[0]
-        return int(c) if c.isdigit() else None
+        return GRADE_ORDER.index(c) if c in GRADE_ORDER else None
 
     out, seen = [], set()
     for tx in taught:
@@ -148,7 +152,8 @@ def prior_grade_paths(nodes, rels):
                         key = (p.get("code"), q.get("code"))
                         if key not in seen:
                             seen.add(key)
-                            out.append((p.get("code"), g2, q.get("code"), q.get("description", "")))
+                            out.append((p.get("code"), GRADE_ORDER[g2], q.get("code"),
+                                        q.get("description", "")))
     return sorted(out)
 
 
@@ -302,7 +307,8 @@ if "result" in st.session_state:
                 st.caption("Traced through the Common Core bridge: TEKS → CCSS → earlier-grade "
                            "CCSS → earlier-grade TEKS.")
                 for fc, g2, tc, td in priors:
-                    st.markdown(f"**{fc}** builds on **Grade {g2} · {tc}** — "
+                    label = f"Grade {g2}" if g2 == "K" or g2.isdigit() else g2
+                    st.markdown(f"**{fc}** builds on **{label} · {tc}** — "
                                 f"{(td[:90] + '…') if len(td) > 90 else td}")
         else:
             st.caption("💡 Load the bundled TEKS framework (sidebar) to unlock prior-grade "

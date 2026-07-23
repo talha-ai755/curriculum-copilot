@@ -2,7 +2,8 @@
 """
 merge_official_progression.py — Build the app's framework file from the OFFICIAL Texas
 Gateway TEKS CASE package as the canonical base, with the Learning Commons progression
-layer (Common Core crosswalk + vertical buildsTowards) merged in by UUID.
+layer (Common Core crosswalk + vertical buildsTowards + non-directed relatesTo) merged
+in by UUID.
 
 Why: the official file is complete + canonical (1,515 math standards, incl. HS courses) but
 has only hierarchy — no cross-grade progression. Learning Commons uses the SAME UUIDs and
@@ -22,7 +23,18 @@ import json
 # grade-level TEKS, and use a fixed letter prefix instead of a numeric grade. Textbooks cite
 # these as e.g. "A.6A" for Algebra I -- confirmed against real Algebra I Teacher Edition PDFs.
 COURSE_PREFIX = {
-    "111.39": "A",     # Algebra I
+    "111.39": "A",      # Algebra I
+    "111.40": "2A",     # Algebra II
+    "111.41": "G",      # Geometry
+    "111.42": "P",      # Precalculus
+    "111.43": "MMA",    # Mathematical Models with Applications
+    "111.44": "AQR",    # Advanced Quantitative Reasoning
+    "111.46": "DM",     # Discrete Mathematics for Problem Solving
+    "111.47": "S",      # Statistics
+    "111.48": "AR",     # Algebraic Reasoning
+    # 111.45 Independent Study: no dedicated per-item TEKS, skipped.
+    # 111.29-111.31 (2025 Advanced Math pathway): no confirmed textbook-code
+    # convention found yet, skipped rather than guessed.
 }
 
 
@@ -89,8 +101,10 @@ def main():
                 ms_items[cu] = {"code": p.get("statementCode") or p.get("humanCodingScheme", ""),
                                 "statement": p.get("description", "")}
 
-    # ── 3. Learning Commons edges: crosswalk (TX<->CCSS) + CCSS vertical chains ──
-    crosswalk, ms_builds, cc_needed = [], [], set()
+    # ── 3. Learning Commons edges: crosswalk (TX<->CCSS) + CCSS vertical/peer links ──
+    # buildsTowards = directional progression; relatesTo = non-directed conceptual link
+    # (https://docs.learningcommons.org/knowledge-graph/graph-reference/learning-progressions).
+    crosswalk, ms_edges, cc_needed = [], [], set()
     ms_uuids = set(ms_items)
     with open("relationships.jsonl") as f:
         for line in f:
@@ -102,15 +116,17 @@ def main():
                     (s in tx_uuids and t in ms_uuids) or (s in ms_uuids and t in tx_uuids)):
                 tx, ms = (s, t) if s in tx_uuids else (t, s)
                 crosswalk.append((tx, ms)); cc_needed.add(ms)
-            elif lab == "buildsTowards" and s in ms_uuids and t in ms_uuids:
-                ms_builds.append((s, t))
-    # keep only CCSS vertical links connected to the crosswalked nodes (grow to fixpoint)
-    kept_builds, changed = [], True
+            elif lab in ("buildsTowards", "relatesTo") and s in ms_uuids and t in ms_uuids:
+                ms_edges.append((lab, s, t))
+    # keep only CCSS vertical/peer links connected to the crosswalked nodes (grow to fixpoint)
+    kept_edges, changed = [], True
     while changed:
         changed = False
-        for e in ms_builds:
-            if e not in kept_builds and (e[0] in cc_needed or e[1] in cc_needed):
-                kept_builds.append(e); cc_needed.update(e); changed = True
+        for e in ms_edges:
+            if e not in kept_edges and (e[1] in cc_needed or e[2] in cc_needed):
+                kept_edges.append(e); cc_needed.update((e[1], e[2])); changed = True
+    kept_builds = [(s, t) for lab, s, t in kept_edges if lab == "buildsTowards"]
+    kept_relates = [(s, t) for lab, s, t in kept_edges if lab == "relatesTo"]
 
     # ── 4. Emit merged CASE: official TEKS (codes converted) + referenced CCSS ───
     cfitems = []
@@ -132,14 +148,18 @@ def main():
                  for tx, ms in crosswalk]
               + [{"associationType": "precedes",
                   "originNodeURI": {"identifier": a}, "destinationNodeURI": {"identifier": b}}
-                 for a, b in kept_builds])
+                 for a, b in kept_builds]
+              + [{"associationType": "isRelatedTo",
+                  "originNodeURI": {"identifier": a}, "destinationNodeURI": {"identifier": b}}
+                 for a, b in kept_relates])
 
     json.dump({"CFDocument": doc, "CFItems": cfitems, "CFAssociations": assocs}, open(OUT, "w"))
     coded = sum(1 for it in cfitems if it["jurisdiction"] == "Texas" and it["humanCodingScheme"])
     print(f"wrote {OUT}")
     print(f"  base (OFFICIAL): {len(tx_items)} TEKS standards ({coded} with textbook codes)")
     print(f"  merged progression: {len(cc_needed)} Common Core standards, "
-          f"{len(crosswalk)} crosswalk + {len(kept_builds)} buildsTowards")
+          f"{len(crosswalk)} crosswalk + {len(kept_builds)} buildsTowards + "
+          f"{len(kept_relates)} relatesTo")
     print(f"  hierarchy from official: {len(tx_hierarchy)} isChildOf")
 
 

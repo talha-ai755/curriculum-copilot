@@ -1,56 +1,26 @@
 #!/usr/bin/env python3
 """
-Streamlit UI for the curriculum knowledge-graph pipeline.
+Streamlit chat UI for the Algebra I curriculum copilot.
 
-Upload a curriculum PDF → Claude extracts its structure → a Learning-Commons-style
-graph is built (nodes + relationships) → view stats, an interactive diagram, the
-raw extraction, and download the JSONL.
+Auto-loads the final, persisted Algebra I knowledge graph (5 modules, Course->Module->Topic->
+Lesson->LearningComponent/Assessment, LC schema) into Neo4j + Qdrant (both on-disk, so this
+survives restarts) and lets a teacher chat with it. The model decides itself whether to query
+the graph, search semantically, or both — see AGENT_SYSTEM_TEMPLATE / TOOLS below.
 
-Run:  streamlit run app.py     (from the learning_outcome/ directory)
-
-Needs a Claude API key for the real run (paste it in the sidebar, or set
-ANTHROPIC_API_KEY). "Demo mode" builds the graph from bundled sample data with no
-API call, so you can try the UI without a key.
+Needs a Claude API key (sidebar, or set ANTHROPIC_API_KEY) and a reachable Neo4j
+(docker compose up -d in this directory starts one with the right credentials by default).
 """
-import io
 import json
 import os
 
 import streamlit as st
 
+import graph_store as gs
 import pdf_to_kg as p2k
+import semantic_index as si
 
-# Sample extraction (real Module 2 content) — powers Demo mode, no API needed.
-SAMPLE_CHUNK = {
-    "module_number": "2", "module_title": "Applying Proportionality",
-    "module_teks": ["7.4C", "7.4D", "7.5A", "7.5C", "7.13A", "7.13B",
-                    "7.13C", "7.13D", "7.13E", "7.13F"],
-    "topics": [
-        {"number": "1", "title": "Proportional Relationships",
-         "teks": ["7.4C", "7.4D", "7.5A", "7.13A", "7.13E", "7.13F"],
-         "readiness_teks": ["7.4D"], "sessions": "18",
-         "learning_outcomes": [
-             "Students solve multi-step problems that involve percent increase and percent decrease and financial literacy problems.",
-             "Students use proportional thinking to determine scale factors and create scale drawings.",
-             "Students identify constants of proportionality."]},
-        {"number": "2", "title": "Financial Literacy: Interest and Budgets",
-         "teks": ["7.4D", "7.13B", "7.13C", "7.13D", "7.13E"],
-         "readiness_teks": ["7.4D"], "sessions": "8",
-         "learning_outcomes": [
-             "Students identify the components of a personal budget.",
-             "Students construct a net worth statement using a financial assets and liabilities record."]},
-    ],
-    "standards": [{"code": "7.4D", "description": "Solve problems involving ratios, rates, and percents"}],
-    "assessments": [
-        {"name": "End of Topic Assessment", "topic_number": "1",
-         "teks": ["7.4C", "7.4D", "7.5A", "7.5C", "7.13A", "7.13F"]},
-        {"name": "End of Topic Assessment", "topic_number": "2",
-         "teks": ["7.4D", "7.13B", "7.13C", "7.13E"]},
-    ],
-}
-
-
-BUNDLED_CASE = "teks_math_case.json"   # ships with the repo: full Texas math TEKS
+NODES_PATH = os.path.join(os.path.dirname(__file__), "data", "algebra1_nodes.jsonl")
+RELS_PATH = os.path.join(os.path.dirname(__file__), "data", "algebra1_relationships.jsonl")
 
 
 def _default_api_key():
@@ -63,321 +33,318 @@ def _default_api_key():
     return os.environ.get("ANTHROPIC_API_KEY", "")
 
 
-def to_jsonl(records):
-    return "\n".join(json.dumps(r) for r in records)
-
-
-def graph_context(module, topics, standards, assessments):
-    """Compact, readable serialization of the graph for grounding Claude's answers."""
-    lines = [f"MODULE {module['number']}: {module['title']}",
-             f"Module-level standards: {', '.join(sorted(module['teks'])) or '—'}", "", "TOPICS:"]
-    for t in topics.values():
-        readi = t["readiness"]
-        codes = ", ".join((c + " (readiness)" if c in readi else c) for c in sorted(t["teks"]))
-        lines.append(f"- Topic {t['number']}: {t['title']}  ({t['sessions']} sessions)")
-        lines.append(f"    Teaches standards: {codes or '—'}")
-        for o in t["outcomes"]:
-            lines.append(f"    • {o}")
-    if assessments:
-        lines.append("\nASSESSMENTS:")
-        for (name, topic_no), a in assessments.items():
-            lines.append(f"- {name} (Topic {topic_no}) assesses: {', '.join(sorted(a['teks'])) or '—'}")
-    if standards:
-        lines.append("\nSTANDARD DESCRIPTIONS:")
-        for code, desc in sorted(standards.items()):
-            if desc:
-                lines.append(f"- {code}: {desc}")
-    return "\n".join(lines)
-
-
-ASK_SYSTEM = (
-    "You are a curriculum copilot for teachers and instructional coaches. Answer the "
-    "question using ONLY the knowledge graph provided below — the module, its topics, the "
-    "standards each topic teaches, learning outcomes, and assessments. Ground every claim in "
-    "it: cite the specific Topic and standard code(s) you used. If the graph covers lesson "
-    "structure and standards alignment but not the detail asked for (e.g. the actual problem "
-    "text, sentence frames, or exit-ticket items), say what the graph DOES tell you and note "
-    "that the full lesson materials would be needed for the rest — never invent specifics. "
-    "Be concise and practical, like you're helping a teacher between classes."
+AGENT_SYSTEM_TEMPLATE = (
+    "You are a curriculum copilot for teachers and instructional coaches, answering "
+    "questions grounded in a Learning-Commons-schema curriculum knowledge graph stored in "
+    "Neo4j, with a Qdrant semantic-search index over the same lesson content for fuzzy/open "
+    "questions. Every node has an `identifier` property that is the SAME value in both "
+    "stores — a semantic_search hit's identifier is exactly what you MATCH on in Cypher.\n\n"
+    "You have three tools:\n"
+    "- graph_query(cypher): runs a READ-ONLY Cypher query you write yourself against Neo4j, "
+    "using the schema below. Go straight here for questions naming an explicit standard code "
+    "or topic. Never write CREATE/MERGE/DELETE/SET/REMOVE — the query will be rejected; if it "
+    "is, or Neo4j errors, read the error and try a corrected query. NOTE: LearningComponent's "
+    "sourceText/description are NOT Neo4j properties (kept only in the search index to avoid "
+    "storing the same text twice) — a Cypher RETURN of those fields will come back null; use "
+    "get_content(identifiers) for the real text once you have the identifier.\n"
+    "  PAGE-NUMBER LOOKUPS FOR A NAMED LESSON/TOPIC/MODULE — use graph_query, not "
+    "semantic_search: a Lesson/Topic/Module's own pageStartLabel/pageEndLabel (or a Lesson's "
+    "pdfPageStart/pdfPageEnd) is the ONE authoritative page range for that node. Its content is "
+    "typically scattered across several child LearningComponents, each with its OWN pageLabel "
+    "for wherever that specific activity happens to fall — semantic_search ranks those by "
+    "similarity to your query, not by position, so its top hit's page is essentially arbitrary "
+    "and is NOT the lesson's starting page. If asked 'what page is <named lesson/topic> on', "
+    "MATCH that Lesson/LessonGrouping node directly and read its own pageStartLabel/"
+    "pageEndLabel — don't infer it from a semantic_search hit's page_label.\n"
+    "- semantic_search(query, limit): searches by meaning over one point per lesson "
+    "activity/assessment, each carrying the REAL, VERBATIM text of its source PDF page (not a "
+    "paraphrase or summary). Use it first for open, fuzzy questions ('how do I teach X'). Each "
+    "hit includes its parent Lesson/Topic name, page_label/pdf_page/lesson_phase, and its "
+    "identifier — the parent name alone is often enough to cite; follow up with graph_query "
+    "using the identifier only if the question needs standards, sibling activities, or "
+    "progression (buildsTowards/hasStandardAlignment) context. Content that doesn't fit a "
+    "regular lesson activity (Assessment Summaries, Pacing Guides, Self-Reflections, Module/"
+    "Topic Overviews) is indexed too, tagged via componentRole (e.g. \"Assessment Summary\") — "
+    "search for those directly when a question needs that kind of content.\n"
+    "- get_content(identifiers): a direct, deterministic fetch of one or more nodes' real text "
+    "by identifier — NOT a search, no ranking involved. Use this whenever graph_query has found "
+    "a LearningComponent (by page, by traversal, by any structural match) and you need its "
+    "actual content, since graph_query itself never returns sourceText/description.\n\n"
+    "AMBIGUOUS ORDINALS — CRITICAL: `ordinalName` (e.g. \"Topic 1\", \"Lesson 3\") is only "
+    "unique WITHIN its parent — every module has its own \"Topic 1\", every topic has its own "
+    "\"Lesson 1\", \"Lesson 2\", etc. There are 5 different \"Topic 1\" nodes in this graph "
+    "alone, one per module, with completely different content. NEVER filter on `ordinalName` "
+    "(or a bare lesson/topic number the user mentions) without ALSO matching through its parent "
+    "Module/Topic to pin down exactly which one — e.g. don't write "
+    "`MATCH (t:LessonGrouping {{ordinalName:'Topic 1'}})` alone; if the question doesn't specify "
+    "which module, either ask which one, or return/consider all matches explicitly rather than "
+    "silently picking one. Getting this wrong doesn't error — it silently returns a real node "
+    "with real content that is nonetheless the WRONG one, which is worse than an empty result.\n\n"
+    "PROGRESSION QUESTIONS ('what does this build on', 'what comes before/after this standard', "
+    "'what grade-level skill leads here'): this course's standards are TEKS-coded (e.g. A.5B), "
+    "and TEKS standards were NEVER given a direct buildsTowards edge in the source framework — "
+    "checking buildsTowards on a TEKS code alone will always come back empty, even when a real "
+    "progression exists. The actual progression data lives on the Common Core side and is reached "
+    "by a two-hop query: TEKS code -> hasStandardAlignment -> Common Core code -> buildsTowards -> "
+    "prerequisite/successor Common Core code. Concretely:\n"
+    "  MATCH (a:StandardsFrameworkItem {{code:'A.5B'}})-[:hasStandardAlignment]->(cc)\n"
+    "  MATCH (cc)<-[:buildsTowards]-(prereq) RETURN prereq.code, prereq.description\n"
+    "(swap the buildsTowards direction to find what a standard leads to instead of what it builds "
+    "on). Try this two-hop pattern BEFORE concluding no progression exists — only say there's no "
+    "progression data if both the direct buildsTowards check AND this hasStandardAlignment hop "
+    "come back empty. The prerequisite/successor you find will usually only have a Common Core "
+    "code (no TEKS crosswalk back), so cite it as-is and describe what it covers.\n\n"
+    "VISUALIZATION: whenever a graph_query result is a CHAIN of 2+ linked hops (a progression/"
+    "prerequisite path, a standards-alignment crosswalk, or any 'walk from X through Y to Z' "
+    "traversal), shape the RETURN so each row is one edge in the chain with exactly these column "
+    "names: from_id, from_label, relationship, to_id, to_label (optionally from_desc, to_desc for "
+    "hover detail). One row per hop — e.g. the A.5B two-hop progression above is 2 rows: one for "
+    "the hasStandardAlignment edge, one for the buildsTowards edge. The app auto-detects this "
+    "shape and renders an interactive diagram beneath your answer, so use it for any progression "
+    "or multi-hop question — not just when explicitly asked to visualize.\n\n"
+    "Always cite the specific Topic/standard code AND page (page_label, when present in a "
+    "tool result) your answer is grounded in. If all tools come up empty or error, say so "
+    "plainly rather than inventing curriculum content. Be concise and practical, like you're "
+    "helping a teacher between classes.\n\n"
+    "GRAPH SCHEMA:\n{schema}"
 )
 
+TOOLS = [
+    {
+        "name": "graph_query",
+        "description": "Run a read-only Cypher query against the Neo4j curriculum graph.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"cypher": {"type": "string",
+                                       "description": "A read-only Cypher query "
+                                                       "(MATCH/RETURN/WHERE/WITH only)."}},
+            "required": ["cypher"],
+        },
+    },
+    {
+        "name": "semantic_search",
+        "description": "Semantic search over the real, verbatim text of lesson activities, "
+                        "assessments, and supplementary page content (Assessment Summaries, "
+                        "Pacing Guides, Self-Reflections, Overviews).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "description": "Max hits to return (default 25)."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_content",
+        "description": "Fetch the real verbatim text (sourceText/description) for one or more "
+                        "LearningComponent identifiers you already have (e.g. from graph_query) "
+                        "-- a direct lookup, not a search. graph_query results never include this "
+                        "text (kept only in this index to avoid storing it twice); call this "
+                        "whenever you need a specific node's actual content, not just its "
+                        "structural properties.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "identifiers": {"type": "array", "items": {"type": "string"},
+                                 "description": "One or more node `identifier` values."},
+            },
+            "required": ["identifiers"],
+        },
+    },
+]
 
-def answer_question(client, context, question):
-    with client.messages.stream(
-        model=p2k.MODEL, max_tokens=1500, thinking={"type": "adaptive"},
-        system=ASK_SYSTEM,
-        messages=[{"role": "user", "content":
-                   f"KNOWLEDGE GRAPH:\n{context}\n\nQUESTION: {question}"}],
-    ) as stream:
-        msg = stream.get_final_message()
-    return next(b.text for b in msg.content if b.type == "text")
+
+def run_tool(name, tool_input, driver, qdrant_client, openai_client):
+    """Dispatch one tool call. Never raises — errors come back as {"error": ...} so the model
+    sees them as the tool result and can react (e.g. revise a bad Cypher query itself)."""
+    try:
+        if name == "graph_query":
+            if driver is None:
+                return {"error": "Neo4j is not connected."}
+            return gs.run_cypher(driver, tool_input["cypher"])
+        if name == "semantic_search":
+            if qdrant_client is None:
+                return {"error": "Qdrant is not available."}
+            if openai_client is None:
+                return {"error": "OPENAI_API_KEY not set — semantic_search needs it to embed "
+                                 "the query (the index was built with OpenAI embeddings)."}
+            return si.search(qdrant_client, openai_client, tool_input["query"],
+                              tool_input.get("limit", 25))
+        if name == "get_content":
+            if qdrant_client is None:
+                return {"error": "Qdrant is not available."}
+            return si.get_content(qdrant_client, tool_input["identifiers"])
+        return {"error": f"unknown tool {name}"}
+    except Exception as e:
+        return {"error": str(e)}
 
 
-GRADE_ORDER = ["K", "1", "2", "3", "4", "5", "6", "7", "8",
-               "A", "G", "2A", "P", "MMA", "AQR", "DM", "S", "AR"]
+def answer_with_tools(client, system, question, driver, qdrant_client, openai_client,
+                       max_turns=6):
+    """Bounded Claude tool-use loop: the model decides itself whether/how many times to call
+    graph_query, semantic_search, and get_content. Returns (answer_text, transcript) where
+    transcript is a list of {"tool", "input", "result"} for display."""
+    messages = [{"role": "user", "content": question}]
+    transcript = []
+    for _ in range(max_turns):
+        resp = client.messages.create(model=p2k.MODEL, max_tokens=1500, system=system,
+                                       tools=TOOLS, messages=messages)
+        messages.append({"role": "assistant", "content": resp.content})
+        if resp.stop_reason != "tool_use":
+            return next((b.text for b in resp.content if b.type == "text"), ""), transcript
+        tool_results = []
+        for block in resp.content:
+            if block.type != "tool_use":
+                continue
+            result = run_tool(block.name, block.input, driver, qdrant_client, openai_client)
+            transcript.append({"tool": block.name, "input": block.input, "result": result})
+            tool_results.append({"type": "tool_result", "tool_use_id": block.id,
+                                  "content": json.dumps(result, default=str)})
+        messages.append({"role": "user", "content": tool_results})
+    return "⚠️ Reached the tool-call limit without a final answer.", transcript
 
 
-def prior_grade_paths(nodes, rels):
-    """Walk the graph's progression edges to find, for each standard the module teaches, the
-    earlier-grade standard it builds on: TX -hasStandardAlignment-> CCSS -buildsTowards/
-    relatesTo-> CCSS -hasStandardAlignment-> TX(lower grade). Returns [(from_code, to_grade,
-    to_code, to_desc)]."""
-    import collections
-    N = {n["identifier"]: n["properties"] for n in nodes}
-    align, nxt, taught = collections.defaultdict(set), collections.defaultdict(set), set()
-    for r in rels:
-        s, t = r["source_identifier"], r["target_identifier"]
-        if r["label"] == "hasStandardAlignment":
-            align[s].add(t); align[t].add(s)
-        elif r["label"] in ("buildsTowards", "relatesTo"):
-            nxt[s].add(t); nxt[t].add(s)                 # walk the chain either direction
-        elif r["label"] == "hasEducationalAlignment" and r["target_labels"][0] == "StandardsFrameworkItem":
-            taught.add(t)
-
-    def grade(uid):
-        c = (N.get(uid, {}).get("code") or "").split(".")[0]
-        return GRADE_ORDER.index(c) if c in GRADE_ORDER else None
-
-    out, seen = [], set()
-    for tx in taught:
-        p = N.get(tx, {})
-        g = grade(tx)
-        if p.get("jurisdiction") != "Texas" or g is None:
-            continue
-        for ms in align[tx]:                             # TX -> CCSS (same grade)
-            for ms2 in nxt[ms]:                          # CCSS -> CCSS (adjacent grade)
-                for tx2 in align[ms2]:                   # CCSS -> back to TX
-                    q, g2 = N.get(tx2, {}), grade(tx2)
-                    if q.get("jurisdiction") == "Texas" and g2 is not None and g2 < g:
-                        key = (p.get("code"), q.get("code"))
-                        if key not in seen:
-                            seen.add(key)
-                            out.append((p.get("code"), GRADE_ORDER[g2], q.get("code"),
-                                        q.get("description", "")))
-    return sorted(out)
+@st.cache_resource(show_spinner="Loading the Algebra I graph into Neo4j + Qdrant…")
+def load_course():
+    """Cached at the process level — runs once per server lifetime, every browser session
+    after the first gets it for free. Neo4j graph load is cheap and stays idempotent (MERGE) so
+    it's fine to redo every launch. The Qdrant curriculum_content collection is built ONCE by
+    build_content_index.py — OpenAI embeddings cost money per call, so this just opens the
+    already-built on-disk collection rather than re-embedding on every app start."""
+    nodes, rels = gs.load_jsonl(NODES_PATH, RELS_PATH)
+    driver, schema_doc = None, None
+    try:
+        driver = gs.get_driver(os.environ.get("NEO4J_URI", gs.DEFAULT_URI),
+                                os.environ.get("NEO4J_USER", gs.DEFAULT_USER),
+                                os.environ.get("NEO4J_PASSWORD", gs.DEFAULT_PASSWORD))
+        gs.load_graph(driver, nodes, rels)
+        schema_doc = gs.schema_description(nodes, rels)
+    except Exception:
+        driver = None
+    qc = si.get_client()
+    openai_client = None
+    if os.environ.get("OPENAI_API_KEY"):
+        from openai import OpenAI
+        openai_client = OpenAI()
+    return driver, schema_doc, qc, openai_client
 
 
 # ── Page ────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Curriculum → Knowledge Graph", page_icon="🧭", layout="wide")
-st.title("🧭 Curriculum → Knowledge Graph")
-st.caption("Upload a curriculum PDF. Claude reads it, extracts the structure, and builds a "
-           "standards-aligned knowledge graph in the Learning-Commons schema.")
+st.set_page_config(page_title="Algebra I Curriculum Copilot", page_icon="🧭", layout="wide")
+st.title("🧭 Algebra I Curriculum Copilot")
+st.caption("Ask questions grounded in the real Bluebonnet Algebra I curriculum (5 modules, "
+           "standards-aligned) — the model cites the specific Topic/Lesson, standard, and page.")
 
 with st.sidebar:
-    st.header("Settings")
-    demo = st.toggle("Demo mode (no API — sample Module 2)", value=True,
-                     help="Build the graph from bundled sample data so you can try the UI "
-                          "without a Claude API key.")
-    api_key = st.text_input("Claude API key", type="password",
-                            value=_default_api_key(),
-                            help="Needed for real PDF extraction AND for asking questions. "
-                                 "Or set ANTHROPIC_API_KEY as an env var / Streamlit secret.")
-    framework = st.text_input("Standards framework", value="TEKS")
-    jurisdiction = st.text_input("Jurisdiction", value="Texas")
-    pages_per_chunk = st.slider("Pages per extraction chunk", 5, 30, 15, disabled=demo)
-    st.divider()
-    case_file = st.file_uploader(
-        "Standards framework — CASE JSON (optional)", type="json",
-        help="Official standards file (e.g. TEKS exported as a 1EdTech CASE document). "
-             "Without it, standards are just the bare codes printed in the PDF — no "
-             "descriptions and no cross-grade links.")
-    use_bundled = st.checkbox("…or use bundled TEKS Mathematics framework",
-                              value=os.path.exists(BUNDLED_CASE),
-                              disabled=not os.path.exists(BUNDLED_CASE),
-                              help="Ships with the app — the full Texas math TEKS "
-                                   "(1,247 standards). Ignored if you upload a file above.")
+    api_key = st.text_input("Claude API key", type="password", value=_default_api_key(),
+                            help="Or set ANTHROPIC_API_KEY as an env var / Streamlit secret.")
 
-pdf_file = None
-if not demo:
-    pdf_file = st.file_uploader("Curriculum PDF", type="pdf")
-    st.info("Each ~%d-page chunk is sent to Claude for structured extraction. "
-            "A 250-page book is ~17 chunks." % pages_per_chunk)
-else:
-    st.info("**Demo mode** is on — click *Build graph* to use bundled Module 2 data. "
-            "Turn it off in the sidebar to upload your own PDF (needs an API key).")
+driver, schema_doc, qdrant_client, openai_client = load_course()
+if driver is None:
+    st.warning("Neo4j unavailable — chat will rely on semantic search only. "
+               "(`docker compose up -d` in this directory to start it.)")
+if openai_client is None:
+    st.info("OPENAI_API_KEY not set — semantic_search is unavailable (the index was built "
+            "with OpenAI embeddings); graph_query still works.")
+elif not qdrant_client.collection_exists(si.COLLECTION):
+    st.warning("curriculum_content isn't built yet — run `python3 build_content_index.py` "
+               "once, then restart. semantic_search will error until then.")
 
-run = st.button("🔨 Build graph", type="primary", use_container_width=True)
+examples = [
+    "Which topics cover TEKS A.3C?",
+    "How do I teach function notation?",
+    "What's the crux of the Quadratic Formula lesson?",
+    "Give me practice problems for solving linear systems.",
+]
+picked = st.pills("Try an example:", examples, selection_mode="single") \
+    if hasattr(st, "pills") else None
+q = st.chat_input("Ask about Algebra I…")
+question = q or picked
 
 
-def run_pipeline():
-    if demo:
-        chunks = [SAMPLE_CHUNK]
+def _show_transcript(transcript):
+    with st.expander("🔎 How this was answered"):
+        for step in transcript:
+            st.markdown(f"**{step['tool']}**`({step['input']})`")
+            st.json(step["result"])
+
+
+_CHAIN_KEYS = {"from": ("from_id", "from_code", "from_name", "from_label"),
+               "to": ("to_id", "to_code", "to_name", "to_label"),
+               "rel": ("relationship", "rel", "relationship_type")}
+
+
+def _extract_chain_edges(transcript):
+    """Pull (from_label, relationship, to_label, from_title, to_title) tuples out of any
+    graph_query result shaped as a chain per the system prompt's VISUALIZATION contract."""
+    def pick(row, keys):
+        for k in keys:
+            if row.get(k):
+                return str(row[k])
+        return None
+
+    edges = []
+    for step in transcript:
+        if step["tool"] != "graph_query" or not isinstance(step["result"], list):
+            continue
+        for row in step["result"]:
+            if not isinstance(row, dict):
+                continue
+            f, t = pick(row, _CHAIN_KEYS["from"]), pick(row, _CHAIN_KEYS["to"])
+            if f and t:
+                r = pick(row, _CHAIN_KEYS["rel"]) or ""
+                edges.append((f, r, t, row.get("from_desc") or "", row.get("to_desc") or ""))
+    return edges
+
+
+def _render_chain_graph(edges):
+    """Interactive node-link diagram for a chain of standards/lessons the model returned in the
+    VISUALIZATION shape (deduped by label; one Edge per hop)."""
+    from streamlit_agraph import Node, Edge, Config, agraph
+    seen, nodes = {}, []
+    for f, _, t, f_desc, t_desc in edges:
+        for label, desc in ((f, f_desc), (t, t_desc)):
+            if label not in seen:
+                seen[label] = True
+                nodes.append(Node(id=label, label=label, title=desc or label, size=22))
+    agraph_edges = [Edge(source=f, target=t, label=r) for f, r, t, _, _ in edges]
+    agraph(nodes=nodes, edges=agraph_edges,
+           config=Config(width=700, height=350, directed=True, physics=True, hierarchical=False))
+
+
+st.session_state.setdefault("chat", [])
+for role, msg, transcript in st.session_state["chat"]:
+    with st.chat_message(role):
+        st.markdown(msg)
+        if transcript:
+            _show_transcript(transcript)
+
+if question:
+    with st.chat_message("user"):
+        st.markdown(question)
+    if not api_key:
+        with st.chat_message("assistant"):
+            st.warning("Enter a Claude API key in the sidebar to ask questions.")
     else:
-        if not pdf_file:
-            st.error("Upload a PDF first, or switch on Demo mode.")
-            return None
-        if not api_key:
-            st.error("Enter a Claude API key (or set ANTHROPIC_API_KEY).")
-            return None
         import anthropic
-        client = anthropic.Anthropic(api_key=api_key)
-        reader_bytes = pdf_file.read()
-        import pypdf
-        reader = pypdf.PdfReader(io.BytesIO(reader_bytes))
-        n = len(reader.pages)
-        chunks, prog = [], st.progress(0.0, "Starting…")
-        import base64
-        starts = list(range(0, n, pages_per_chunk))
-        for idx, start in enumerate(starts):
-            end = min(start + pages_per_chunk, n)
-            writer = pypdf.PdfWriter()
-            for i in range(start, end):
-                writer.add_page(reader.pages[i])
-            buf = io.BytesIO(); writer.write(buf)
-            b64 = base64.standard_b64encode(buf.getvalue()).decode()
-            label = f"pages {start + 1}-{end}"
-            prog.progress((idx) / len(starts), f"Extracting {label} …")
-            try:
-                chunks.append(p2k.extract_chunk(client, b64, label))
-            except Exception as e:
-                st.warning(f"Chunk {label} failed: {e}")
-        prog.progress(1.0, "Extraction complete")
-
-    case = None
-    if case_file is not None:
-        try:
-            case = p2k.load_case(json.load(case_file))
-        except Exception as e:
-            st.warning(f"Couldn't read the CASE file (ignoring it): {e}")
-    elif use_bundled and os.path.exists(BUNDLED_CASE):
-        with open(BUNDLED_CASE) as fh:
-            case = p2k.load_case(json.load(fh))
-
-    module, topics, standards, assessments = p2k.merge(chunks)
-
-    if case:  # enrich extracted standards with official descriptions
-        for t in topics.values():
-            for code in t["teks"]:
-                if not standards.get(code):
-                    stmt = case["code_to_stmt"].get(p2k._norm_code(code))
-                    if stmt:
-                        standards[code] = stmt
-
-    nodes, rels = p2k.build_graph(module, topics, standards, assessments,
-                                  jurisdiction, framework, case)
-    return module, topics, standards, assessments, nodes, rels, case
-
-
-if run:
-    result = run_pipeline()
-    if result:
-        st.session_state["result"] = result
-
-if "result" in st.session_state:
-    module, topics, standards, assessments, nodes, rels, case = st.session_state["result"]
-
-    from collections import Counter
-    ncount, ecount = Counter(n["labels"][0] for n in nodes), Counter(r["label"] for r in rels)
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Nodes", len(nodes))
-    c2.metric("Edges", len(rels))
-    c3.metric("Standards", ncount.get("StandardsFrameworkItem", 0))
-    c4.metric("Topics", ncount.get("LessonGrouping", 0))
-
-    # dangling-endpoint integrity check
-    ids = {n["identifier"] for n in nodes}
-    dangling = sum(1 for r in rels for k in ("source_identifier", "target_identifier")
-                   if r[k] not in ids)
-    (st.success if dangling == 0 else st.error)(
-        f"Graph integrity: {len(rels)} edges, {dangling} dangling endpoints"
-        + (" ✓" if dangling == 0 else " ✗"))
-
-    # framework coverage: how many curriculum codes matched the official standards
-    codes_used = sorted({c for t in topics.values() for c in t["teks"]} | set(module["teks"]))
-    if case:
-        matched = [c for c in codes_used if p2k._norm_code(c) in case["code_to_uuid"]]
-        st.info(f"📐 Framework **{case['framework']['title']}** loaded — "
-                f"**{len(matched)}/{len(codes_used)}** curriculum codes matched to official "
-                f"standards ({len(case['by_uuid'])} standards, {len(case['assocs'])} links in the file).")
-    else:
-        st.info("No framework file loaded — standards are bare codes from the PDF (no "
-                "descriptions, no cross-grade links). Upload a CASE JSON in the sidebar to enrich them.")
-
-    tab_chat, tab_extract, tab_download = st.tabs(["💬 Chat", "📋 Extraction", "⬇ Download"])
-
-    priors = prior_grade_paths(nodes, rels)   # vertical alignment via the Common Core bridge
-
-    with tab_chat:
-        st.caption("Test the copilot — ask questions the way a teacher would. Answers are "
-                   "grounded in the graph you just built. Needs a Claude API key (sidebar).")
-
-        if priors:
-            with st.expander(f"🔻 Prior-grade connections ({len(priors)}) — what each skill builds on"):
-                st.caption("Traced through the Common Core bridge: TEKS → CCSS → earlier-grade "
-                           "CCSS → earlier-grade TEKS.")
-                for fc, g2, tc, td in priors:
-                    label = f"Grade {g2}" if g2 == "K" or g2.isdigit() else g2
-                    st.markdown(f"**{fc}** builds on **{label} · {tc}** — "
-                                f"{(td[:90] + '…') if len(td) > 90 else td}")
-        else:
-            st.caption("💡 Load the bundled TEKS framework (sidebar) to unlock prior-grade "
-                       "connections.")
-
-        with st.expander("🔎 What the assistant can see (grounding context)"):
-            st.code(graph_context(module, topics, standards, assessments), language="text")
-        examples = [
-            "Which topics cover TEKS 7.4D?",
-            "How was 7.4D taught in a prior grade?",
-            "My students bombed the Topic 1 assessment — what standards should I re-teach?",
-            "What is the most critical takeaway of Topic 1?",
-        ]
-        picked = st.pills("Try an example:", examples, selection_mode="single") \
-            if hasattr(st, "pills") else None
-        q = st.chat_input("Ask about this curriculum…")
-        question = q or picked
-
-        st.session_state.setdefault("chat", [])
-        for role, msg in st.session_state["chat"]:
-            with st.chat_message(role):
-                st.markdown(msg)
-
-        if question:
-            with st.chat_message("user"):
-                st.markdown(question)
-            if not api_key:
-                with st.chat_message("assistant"):
-                    st.warning("Enter a Claude API key in the sidebar to ask questions.")
-            else:
-                import anthropic
-                ctx = graph_context(module, topics, standards, assessments)
-                if priors:
-                    ctx += "\n\nPRIOR-GRADE LINKS (how each standard connects to earlier grades):\n" \
-                        + "\n".join(f"- {fc} builds on Grade {g2} {tc}: {td}"
-                                    for fc, g2, tc, td in priors)
-                with st.chat_message("assistant"):
-                    with st.spinner("Thinking…"):
-                        try:
-                            ans = answer_question(anthropic.Anthropic(api_key=api_key), ctx, question)
-                        except Exception as e:
-                            ans = f"⚠️ {e}"
-                    st.markdown(ans)
-                st.session_state["chat"] += [("user", question), ("assistant", ans)]
-
-    with tab_extract:
-        st.subheader(f"Module {module['number']}: {module['title']}")
-        rows = [{"Topic": f"{t['number']}. {t['title']}",
-                 "Sessions": t["sessions"],
-                 "TEKS taught": ", ".join(sorted(t["teks"])),
-                 "Learning outcomes": len(t["outcomes"])}
-                for t in topics.values()]
-        st.dataframe(rows, use_container_width=True)
-        st.markdown("**Standards seen:** " + ", ".join(sorted(
-            set(standards) | set(module["teks"])
-            | {c for t in topics.values() for c in t["teks"]})))
-        with st.expander("Raw extraction JSON"):
-            st.json({"module": {**module, "teks": sorted(module["teks"])},
-                     "topics": {k: {**v, "teks": sorted(v["teks"]),
-                                    "readiness": sorted(v["readiness"])}
-                                for k, v in topics.items()}})
-
-    with tab_download:
-        st.download_button("nodes.new.jsonl", to_jsonl(nodes),
-                           file_name="nodes.new.jsonl", use_container_width=True)
-        st.download_button("relationships.new.jsonl", to_jsonl(rels),
-                           file_name="relationships.new.jsonl", use_container_width=True)
-        st.caption("Same schema as the existing graph — append these to nodes.jsonl / "
-                   "relationships.jsonl to grow the map.")
-else:
-    st.divider()
-    st.markdown("👈 Configure in the sidebar, then click **Build graph**.")
+        system = AGENT_SYSTEM_TEMPLATE.format(
+            schema=schema_doc or "(Neo4j not loaded — graph_query will error; rely on "
+                                  "semantic_search instead.)")
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking…"):
+                try:
+                    ans, transcript = answer_with_tools(
+                        anthropic.Anthropic(api_key=api_key), system, question,
+                        driver, qdrant_client, openai_client)
+                except Exception as e:
+                    ans, transcript = f"⚠️ {e}", []
+            st.markdown(ans)
+            chain_edges = _extract_chain_edges(transcript)
+            if chain_edges:
+                st.caption("Progression / relationship chain found in the graph:")
+                _render_chain_graph(chain_edges)
+            if transcript:
+                _show_transcript(transcript)
+        st.session_state["chat"] += [("user", question, None),
+                                     ("assistant", ans, transcript)]

@@ -21,3 +21,11 @@ venv/
 .streamlit/secrets.toml
 .DS_Store
 .batch_state.json
+
+# secrets / IDE / generated
+.env
+.idea/
+.mcp.json
+data/
+*.bak_*
+teks_math_graph.html

@@ -45,7 +45,17 @@ _INDEXABLE_LABELS = {
 # generic standard statements out-ranking genuinely relevant activity text on cosine similarity).
 
 
-def get_client(path=None):
+def get_client(path=None, host=None, port=None, api_key=None):
+    """Local on-disk client by default (path=), or a remote Qdrant server if host is given
+    (explicitly, or via QDRANT_HOST env var) -- the two modes are mutually exclusive in the
+    underlying qdrant-client library, so this picks one rather than trying both. Remote mode
+    also respects QDRANT_PORT (default 6333) and QDRANT_API_KEY (optional, for a secured
+    deployment) via env vars if not passed explicitly."""
+    host = host or os.environ.get("QDRANT_HOST")
+    if host:
+        port = port or int(os.environ.get("QDRANT_PORT", 6333))
+        api_key = api_key or os.environ.get("QDRANT_API_KEY") or None
+        return QdrantClient(host=host, port=port, api_key=api_key)
     return QdrantClient(path=path or DEFAULT_PATH)
 
 

@@ -44,7 +44,8 @@ _bool = {"type": "boolean"}
 _phase = {"type": "string",
           "enum": ["getting_started", "develop", "demonstrate", "practice", "assessment", ""]}
 _supp_type = {"type": "string",
-              "enum": ["assessment_summary", "pacing_guide", "self_reflection", "overview", "other"]}
+              "enum": ["assessment_summary", "pacing_guide", "self_reflection", "overview",
+                       "discourse_questions", "differentiation_strategy", "other"]}
 
 EXTRACTION_SCHEMA = _obj({
     "module_number": _str,           # "" if this chunk has no module header
@@ -160,9 +161,11 @@ SYSTEM = (
     "aligns to, and any standard descriptions printed.\n\n"
     "EVERY PAGE SHOULD BE ACCOUNTED FOR in your output. If a page's content doesn't "
     "fit a lesson/learning-outcome/assessment (e.g. a Module or Topic Assessment "
-    "Summary table, a Pacing Guide, a Self-Reflection prompt, or a Module/Topic "
-    "Overview narrative), capture it in `supplementary` instead of skipping it — give "
-    "its type, page, page_label, the topic_number it belongs to (or '' if it's "
+    "Summary table, a Pacing Guide, a Self-Reflection prompt, a Module/Topic "
+    "Overview narrative, a 'QUESTIONS TO SUPPORT DISCOURSE' box of facilitation "
+    "prompts, or a 'DIFFERENTIATION STRATEGY'/'Just in Time Support'/'Challenge "
+    "Opportunity' sidebar), capture it in `supplementary` instead of skipping it — "
+    "give its type, page, page_label, the topic_number it belongs to (or '' if it's "
     "module-level, not tied to one topic), and its text close to verbatim. Don't "
     "duplicate content you already captured as a learning_outcome/assessment — "
     "`supplementary` is for content that has nowhere else to go.\n\n"
@@ -172,7 +175,16 @@ SYSTEM = (
     "exact number from the label — never count, compute, or guess it. Also read the "
     "small printed page label in the page's own footer/header (e.g. '21', '4B', "
     "'IL-1E', distinct from the PDF page number) and report it verbatim as "
-    "page_label; never invent a label if none is visible.\n\n"
+    "page_label.\n\n"
+    "page_label IS NOT OPTIONAL — this applies to every learning_outcome, every "
+    "assessment, AND every supplementary item alike, with no exceptions for whichever "
+    "category feels like a catch-all. Every single page in these books has one printed "
+    "(next to the 'MODULE N • TOPIC N • LESSON N' running header/footer, sometimes "
+    "before it, sometimes after) — a blank page_label should be rare, not the default. "
+    "Before leaving it blank, look again: the label is small but it is there. Treat "
+    "this with the same seriousness as the exact-page-number rule above and the "
+    "verbatim-source_text rule — a page_label you didn't bother to find is exactly as "
+    "unusable as one you invented.\n\n"
     "Only report what actually appears on these pages. Use exact standard codes. If "
     "a field is absent, return an empty string, 0, or empty list as appropriate — "
     "never invent content."
@@ -413,7 +425,11 @@ def load_case(data):
         o = (a.get("originNodeURI") or {}).get("identifier")
         d = (a.get("destinationNodeURI") or {}).get("identifier")
         if o and d:
-            parsed.append((a.get("associationType"), o, d))
+            # confidence/rationale: only present on inferred associations (see
+            # infer_missing_crosswalk.py) -- carried through as edge properties so the agent can
+            # tell a real, curated crosswalk edge apart from an AI-inferred candidate.
+            extra = {k: a[k] for k in ("confidence", "rationale") if a.get(k)}
+            parsed.append((a.get("associationType"), o, d, extra))
     return {"framework": {"uuid": doc.get("identifier"),
                           "title": doc.get("title") or "Standards Framework"},
             "by_uuid": by_uuid, "assocs": parsed,
@@ -424,6 +440,10 @@ def load_case(data):
 _ASSOC_EDGE = {"isRelatedTo": "relatesTo", "isPeerOf": "relatesTo",
                "precedes": "buildsTowards", "isPrerequisiteFor": "buildsTowards",
                "isStandardAlignedTo": "hasStandardAlignment",   # cross-framework crosswalk
+               # AI-inferred candidate crosswalk (infer_missing_crosswalk.py) for TEKS<->CC pairs
+               # the real Learning Commons crosswalk never covered -- a DIFFERENT edge label than
+               # hasStandardAlignment on purpose, so it's never mistaken for the curated data.
+               "isStandardAlignedTo_inferred": "possibleStandardAlignment",
                "exemplar": "hasReference"}
 
 
@@ -503,9 +523,20 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
         if uid in emitted_std:
             return
         emitted_std.add(uid)
-        node(uid, "StandardsFrameworkItem", description=stmt or code or "", code=code,
-             jurisdiction=juris or jurisdiction, academicSubject="Mathematics",
-             readinessStandard=str(code in readiness).lower(), caseIdentifierUUID=uid)
+        # readinessStandard is only ever stamped when true. Every course's build_graph() call
+        # emits ALL standards in the shared framework as nodes (not just the ones it teaches), so
+        # a standard genuinely marked readiness by one course's Pacing Guide (e.g. Algebra I's
+        # A.3C) would otherwise get silently overwritten to false by a different course (e.g.
+        # Grade 8) that also touches the same shared node but never saw it marked bold in ITS OWN
+        # book. Omitting the key when false means Neo4j's `SET n += props` never erases a `true`
+        # another course already set -- a positive, observed signal should never be clobbered by
+        # another course's mere absence of evidence.
+        props = dict(description=stmt or code or "", code=code,
+                     jurisdiction=juris or jurisdiction, academicSubject="Mathematics",
+                     caseIdentifierUUID=uid)
+        if code in readiness:
+            props["readinessStandard"] = "true"
+        node(uid, "StandardsFrameworkItem", **props)
 
     # ── standards backbone ───────────────────────────────────────────────────
     if case:
@@ -514,7 +545,7 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
              academicSubject="Mathematics", jurisdiction=jurisdiction, caseIdentifierUUID=fw_id)
         for uid, it in case["by_uuid"].items():          # full framework from the CASE file
             ensure_std(uid, it["code"], it["statement"], it.get("jurisdiction"))
-        for atype, o, d in case["assocs"]:               # hierarchy + cross-grade links
+        for atype, o, d, extra in case["assocs"]:         # hierarchy + cross-grade links
             if o not in emitted_std or d not in emitted_std:
                 continue
             if atype == "isChildOf":
@@ -522,7 +553,7 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
                     s_key="caseIdentifierUUID", t_key="caseIdentifierUUID")
             elif atype in _ASSOC_EDGE:
                 rel(_ASSOC_EDGE[atype], o, "StandardsFrameworkItem", d, "StandardsFrameworkItem",
-                    s_key="caseIdentifierUUID", t_key="caseIdentifierUUID")
+                    s_key="caseIdentifierUUID", t_key="caseIdentifierUUID", **extra)
     else:
         fw_id = case_uuid("__root__")
         node(fw_id, "StandardsFramework", name=f"{framework} Standards",
@@ -543,7 +574,7 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
     # ── content side + the bridge (alignments now resolve to real standards) ──
     mod_id = nid("Module", module["number"] or module["title"] or "module")
     node(mod_id, "LessonGrouping", name=module["title"], groupName="Module",
-         groupLevel="0", ordinalName=f"Module {module['number']}",
+         groupLevel="0", ordinalName=f"Module {module['number']}", position=module["number"],
          academicSubject="Mathematics", curriculumLabel="Module")
     for code in sorted(module["teks"]):
         rel("hasEducationalAlignment", mod_id, "LessonGrouping",
@@ -617,7 +648,9 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
     # Pacing Guides, Self-Reflections, Overviews) -- reuses LearningComponent rather than a new
     # node type, so it gets embedded into Qdrant automatically with zero extra indexing code.
     _SUPP_ROLE = {"assessment_summary": "Assessment Summary", "pacing_guide": "Pacing Guide",
-                  "self_reflection": "Self-Reflection", "overview": "Overview", "other": ""}
+                  "self_reflection": "Self-Reflection", "overview": "Overview",
+                  "discourse_questions": "Discourse Questions",
+                  "differentiation_strategy": "Differentiation Strategy", "other": ""}
     for i, sup in enumerate(supplementary):
         supp_id = nid("LearningComponent", f"{module['number']}:supp:{i}")
         node(supp_id, "LearningComponent", description=sup.get("text", ""),

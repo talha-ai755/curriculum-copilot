@@ -14,6 +14,7 @@ build_batch_v3_course.py can poll and assemble results later.
 Usage: python3 submit_batch_v3.py
 """
 import json
+import os
 import sys
 
 import anthropic
@@ -28,7 +29,24 @@ MODULES = {
     "Module 4": BASE + "Algebra I Math Teacher Edition, Volume 2 Module 4.pdf",
     "Module 5": BASE + "Algebra I Math Teacher Edition, Volume 2 Module 5.pdf",
 }
+COURSE_NODES_PATH = "data/algebra1_nodes.jsonl"  # lets backfill_page_labels.py auto-discover MODULES
 STATE_PATH = "/tmp/batch_v3_state.json"
+CACHE_DIR = "/tmp/docling_cache"
+
+
+def cached_page_text(module_name, pdf_path):
+    """Docling's output is prompt-independent (literal page text) -- cache it so a resubmit
+    (e.g. after a stuck/canceled batch) never has to redo the expensive conversion."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    cache_path = f"{CACHE_DIR}/{module_name.replace(' ', '_')}_algebra1.json"
+    if os.path.exists(cache_path):
+        print(f"  {module_name}: using cached docling text ({cache_path})", file=sys.stderr)
+        with open(cache_path) as f:
+            return {int(k): v for k, v in json.load(f).items()}
+    page_text = p2k.docling_page_text(pdf_path)
+    with open(cache_path, "w") as f:
+        json.dump(page_text, f)
+    return page_text
 
 
 def main():
@@ -36,7 +54,7 @@ def main():
     custom_id_map = {}
     for module_name, pdf_path in MODULES.items():
         print(f"Converting {module_name} via docling...", file=sys.stderr)
-        page_text = p2k.docling_page_text(pdf_path)
+        page_text = cached_page_text(module_name, pdf_path)
         print(f"  {module_name}: {len(page_text)} pages", file=sys.stderr)
         for first, last, labeled_text in p2k.build_page_batches(page_text, batch_size=25):
             custom_id = f"{module_name.replace(' ', '')}_{first}_{last}"

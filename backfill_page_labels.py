@@ -14,12 +14,8 @@ that deterministic value whenever its pdfPage has a known label -- not just fill
 PDF-read map is authoritative; Claude's self-reported label is not trusted either way. Purely
 deterministic -- no re-extraction, no Claude call.
 
-COURSES is auto-discovered (see discover_courses() below) from every submit_batch_*.py in this
-directory that declares MODULES (module name -> pdf path) and COURSE_NODES_PATH (its
-data/*_nodes.jsonl output) -- both already exist in those scripts for the Batch API submission
-itself, so a newly-ingested course needs no separate registration here: write its
-submit_batch_<course>.py the same way as the existing ones (MODULES + COURSE_NODES_PATH already
-required for extraction), and this script picks it up automatically on its next run.
+COURSES comes from the curriculum registry (see discover_courses() below): the latest ready
+version of every base curriculum and its module PDFs.
 Safe to re-run on already-fixed courses too -- every run recomputes every label from the PDF
 regardless of the node's current value, so it's idempotent. Cheap (a few minutes of PDF reading,
 no API calls) -- worth running as a standard last step every time a new course is ingested.
@@ -39,7 +35,6 @@ immediately before the `\\n`, and the final capture is `.strip()`-ed before vali
 Usage: python3 backfill_page_labels.py
 """
 import argparse
-import glob
 import importlib.util
 import json
 import re
@@ -61,24 +56,14 @@ def _page_text(page):
 
 def discover_courses():
     """{course's nodes.jsonl path: {module name: pdf path}} for the latest ready version of every
-    base curriculum in the registry (registry.published_courses()). Falls back to the
-    pre-registry scan -- importing every submit_batch_*.py in this directory and reading its
-    MODULES + COURSE_NODES_PATH -- only while the registry is still empty (before
-    import_existing.py has run)."""
+    base curriculum in the registry (registry.published_courses()). An empty registry (fresh
+    checkout, lost data/app.db) is restored with `python3 import_existing.py`."""
     import registry
     with registry.connect() as conn:
         courses = registry.published_courses(conn)
-    if courses:
-        return courses
-    courses = {}
-    for script_path in sorted(glob.glob("submit_batch_*.py")):
-        spec = importlib.util.spec_from_file_location(script_path[:-3], script_path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        nodes_path = getattr(mod, "COURSE_NODES_PATH", None)
-        module_pdfs = getattr(mod, "MODULES", None)
-        if nodes_path and module_pdfs:
-            courses[nodes_path] = module_pdfs
+    if not courses:
+        print("  WARNING: curriculum registry is empty -- run `python3 import_existing.py`",
+              file=sys.stderr)
     return courses
 
 

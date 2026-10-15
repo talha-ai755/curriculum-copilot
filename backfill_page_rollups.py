@@ -270,7 +270,7 @@ def process_course(jsonl_path, write):
     with open(rels_path) as f:
         rels = [json.loads(l) for l in f]
 
-    # PDFs come from the course's submit_batch_*.py MODULES; a course without them (or with
+    # PDFs come from the course's registry modules; a course without them (or with
     # unreachable PDFs) still gets the graph-only fallbacks.
     module_pdfs = COURSE_PDFS.get(jsonl_path)
     apply(nodes, rels, module_pdfs if module_pdfs and all(os.path.exists(p) for p in

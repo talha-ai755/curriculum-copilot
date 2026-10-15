@@ -15,44 +15,19 @@ points for the same content).
 
 Needs OPENAI_API_KEY set. Usage: python3 build_content_index.py
 """
-import glob
 import os
-import re
 import sys
 
 from dotenv import load_dotenv
 from openai import OpenAI
 
-import graph_store as gs
 import semantic_index as si
+from agent import load_all_courses
 
 load_dotenv()
 
 if not os.environ.get("OPENAI_API_KEY"):
     sys.exit("OPENAI_API_KEY not set")
-
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-
-
-def load_all_courses():
-    """Every course is a `<name>_nodes.jsonl` + `<name>_relationships.jsonl` pair in data/ (skips
-    the .v1/.v2 backup files, which end in a version suffix before .jsonl)."""
-    nodes_by_id, rels_by_id = {}, {}
-    node_paths = sorted(p for p in glob.glob(f"{DATA_DIR}/*_nodes.jsonl")
-                         if not re.search(r"\.v\d+\.jsonl$", p))
-    for nodes_path in node_paths:
-        rels_path = nodes_path.replace("_nodes.jsonl", "_relationships.jsonl")
-        if not os.path.exists(rels_path):
-            continue
-        nodes, rels = gs.load_jsonl(nodes_path, rels_path)
-        print(f"  {os.path.basename(nodes_path)}: {len(nodes)} nodes, {len(rels)} rels",
-              file=sys.stderr)
-        for n in nodes:
-            nodes_by_id[n["identifier"]] = n
-        for r in rels:
-            rels_by_id[r["identifier"]] = r
-    return list(nodes_by_id.values()), list(rels_by_id.values())
-
 
 def main():
     print("Loading all course JSONL pairs...", file=sys.stderr)

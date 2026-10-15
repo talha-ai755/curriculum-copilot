@@ -4,21 +4,31 @@ How a module PDF becomes the graph the copilot answers from, and which script ow
 The README covers setup; this file covers the order things run in and why.
 
 ```
- module PDFs ──► 1. submit ──► Claude Batch API ──► 2. build ──► data/<course>_*.jsonl
- (teacher eds)    pdfium text                        merge + graph     │   ▲
-                  25-page batches                    post-process      │   └─ snapshot.py
-                                                     checks            │      (before every write)
+ registry (data/app.db) ── curricula, versions, module PDFs, jobs
+        │
+ module PDFs ──► 1. submit ──► Claude Batch API ──► 2. build ──► data/curricula/<id>/v<n>/
+ (teacher eds)    pdfium text                        merge + graph       nodes / relationships
+                  lesson-aligned batches             post-process        extractions/ (raw chunks)
+                                                     checks, diff
                                                                        ▼
-                                          3. load ──► Neo4j (structure) + Qdrant (text)
+                                          3. load ──► Neo4j (structure) + Qdrant (text), scoped
                                                                        │
                                                                        ▼
                                           4. serve ──► app.py ──► agent.py tool loop ──► answer
 ```
 
-## 1. Submit extraction — `submit_batch_<course>.py`
+Ingestion is driven by `ingest.py` (CLI now; the Streamlit Library page in Phase 4):
+`create` registers a base curriculum + version 1 with its module PDFs → `submit` → `build`.
+An update is `plan_update` (change report + number of extraction calls, no cost) →
+`create_update_version` → `submit(only=...)` → `build` (see "Updating a curriculum" below).
+The 10 courses ingested before the registry existed are base version 1, pointing at their
+original `data/<course>_*.jsonl` files (`import_existing.py` restores them from the committed
+`registry_seed.json` if `data/app.db` is lost).
 
-- Each course has a thin config: `MODULES` (module name → PDF path), `COURSE_NODES_PATH`,
-  `STATE_PATH`. `backfill_page_labels.discover_courses()` finds every course through these files.
+## 1. Submit extraction — `ingest.submit()`
+
+- The curriculum's modules and PDFs come from the registry (`registry.py`);
+  `backfill_page_labels.discover_courses()` lists the latest ready version of every base.
 - `batch_pipeline.submit_course_batch()`:
   - reads each PDF's text per page with pypdfium2 (`pdf_to_kg.pdfium_page_text`, cached in
     `/tmp/page_text_cache`);
@@ -30,12 +40,12 @@ The README covers setup; this file covers the order things run in and why.
     two topics (`lesson_pages.topic_of_pages`). PDFs without recognizable headers fall back to fixed 25-page windows;
   - sends one Batch API request per batch with the structured-output schema
     (`pdf_to_kg.EXTRACTION_SCHEMA`);
-  - saves the batch id and the `custom_id` map to `data/batch_state/` — keep these files: they
-    are the only way to rebuild a course from its (paid-for) results.
+  - saves the batch id and the `custom_id` map to the version folder (`batch_state.json`).
 
-## 2. Build the course — `build_batch_<course>_course.py`
+## 2. Build the course — `ingest.build()`
 
-`batch_pipeline.build_course_from_batch()` polls the batch, then runs, in order:
+`batch_pipeline.collect_batch_chunks()` polls the batch; every raw chunk is saved under the
+version's `extractions/` (`save_chunks`); `batch_pipeline.build_course()` then runs, in order:
 
 | Step | Code | What it does |
 |---|---|---|
@@ -100,3 +110,17 @@ python3 graph_bench.py [--run]        # questions with known answers; --run scor
 
 After any `--write`: reload Neo4j (`reload_neo4j.py --apply` locally) and, if text changed,
 rebuild Qdrant.
+
+## Updating a curriculum (new PDF version)
+
+`ingest.plan_update(curriculum, {module: new_pdf})` works out what changed before any paid call
+(`changes.py`): file hash (identical PDF → nothing to do), per-page text hashes aligned with
+difflib (inserted/removed pages that shift numbering are handled), changed pages mapped to
+lessons through the running headers, and per lesson-aligned batch whether a saved chunk can be
+reused (page numbers remapped) or the batch must be re-extracted. The report lists pages and
+lessons changed and the number of extraction calls. `create_update_version` copies the reusable
+chunks into the new version, `submit(only=...)` extracts the rest, `build` merges both and stores
+`changes.diff_graphs` (added / removed / changed nodes vs the previous version).
+LearningComponent ids are stable (module + content hash, not list position or page), so unchanged
+content keeps its id across versions. Courses imported as version 1 have no saved chunks: their
+first update re-extracts every batch (the plan says so).

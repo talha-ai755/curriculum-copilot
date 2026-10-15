@@ -17,9 +17,8 @@ page should be able to catch. data/<course>_nodes.jsonl is still used to work ou
 identifiers belong on a given page (via hasPart-walk module scoping) -- only the properties shown
 for each one are the live ones.
 
-Courses/modules are auto-discovered the same way backfill_page_labels.py does (every
-submit_batch_*.py's MODULES + COURSE_NODES_PATH), so a newly-ingested course shows up here with no
-extra registration step.
+Courses/modules come from the curriculum registry (backfill_page_labels.discover_courses()),
+so a newly-ingested course shows up here with no extra registration step.
 """
 import json
 import os
@@ -191,14 +190,11 @@ def _live_relationships(driver, identifiers):
 
 
 courses = discover_courses()  # {nodes_path: {module_name: pdf_path}}
-# discover_courses() only requires MODULES + COURSE_NODES_PATH to be non-empty in a course's
-# submit_batch_<name>.py -- true as soon as its PDFs are found on disk, well before that course
-# has actually been built (e.g. Grade 6/7 here: PDFs discovered, batch still processing, no
-# data/grade6_nodes.jsonl yet). Filter those out rather than crash on a missing file.
+# Only ready versions are listed by the registry, but guard against a missing file anyway.
 courses = {p: m for p, m in courses.items() if os.path.exists(p)}
 if not courses:
     st.warning("No BUILT courses yet — a course needs data/<name>_nodes.jsonl to exist (run its "
-               "build_batch_<name>_course.py), not just a submit_batch_<name>.py with MODULES.")
+               "ingest.py build), not just a registered curriculum.")
     st.stop()
 
 courses_key = tuple(sorted((p, os.path.getmtime(p)) for p in courses))

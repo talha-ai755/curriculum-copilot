@@ -206,6 +206,23 @@ def module_pdfs(conn, curriculum_id, version):
     return {m["module"]: m["pdf_path"] for m in modules(conn, curriculum_id, version)}
 
 
+def published_versions(conn):
+    """[{**curriculum, **version}] -- the latest ready version of every base curriculum."""
+    out = []
+    for c in list_curricula(conn):
+        v = latest_ready(conn, c["id"])
+        if v:
+            out.append({**c, **v})
+    return out
+
+
+STANDARDS_LABELS = ("StandardsFramework", "StandardsFrameworkItem")
+
+
+def scope_of(curriculum_id, version):
+    return f"base:{curriculum_id}@v{version}"
+
+
 def published_courses(conn):
     """{nodes_path: {module: pdf_path}} for the latest ready version of every base curriculum --
     the registry-backed replacement for backfill_page_labels.discover_courses()."""

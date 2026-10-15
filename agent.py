@@ -17,19 +17,29 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 
 def load_all_courses():
-    """Every course is a `<name>_nodes.jsonl` + `<name>_relationships.jsonl` pair in data/ --
-    picked up automatically, whatever's currently there, no hardcoded course list to go stale.
-    Deduped by identifier -- courses share the same standards backbone (same
-    StandardsFrameworkItem identifiers)."""
+    """The latest ready version of every base curriculum in the registry (registry.py), merged
+    and deduped by identifier -- courses share one standards backbone (same
+    StandardsFrameworkItem identifiers). Every node is tagged with `scope`:
+    'base:<curriculum>@v<n>' for content, 'framework:<id>' for standards. Falls back to every
+    data/*_nodes.jsonl pair only while the registry is still empty."""
+    import registry
+    with registry.connect() as conn:
+        published = registry.published_versions(conn)
+    if not published:
+        published = [{"nodes_path": p, "rels_path": p.replace("_nodes.jsonl", "_relationships.jsonl"),
+                      "id": None, "version": None, "framework_id": None}
+                     for p in sorted(glob.glob(f"{DATA_DIR}/*_nodes.jsonl"))
+                     if not re.search(r"\.v\d+\.jsonl$", p)]
     nodes_by_id, rels_by_id = {}, {}
-    for nodes_path in sorted(glob.glob(f"{DATA_DIR}/*_nodes.jsonl")):
-        if re.search(r"\.v\d+\.jsonl$", nodes_path):
+    for v in published:
+        if not os.path.exists(v["rels_path"]):
             continue
-        rels_path = nodes_path.replace("_nodes.jsonl", "_relationships.jsonl")
-        if not os.path.exists(rels_path):
-            continue
-        nodes, rels = gs.load_jsonl(nodes_path, rels_path)
+        nodes, rels = gs.load_jsonl(v["nodes_path"], v["rels_path"])
         for n in nodes:
+            if v["id"]:
+                n["properties"]["scope"] = (f"framework:{v['framework_id']}"
+                                            if n["labels"][0] in registry.STANDARDS_LABELS
+                                            else registry.scope_of(v["id"], v["version"]))
             nodes_by_id[n["identifier"]] = n
         for r in rels:
             rels_by_id[r["identifier"]] = r

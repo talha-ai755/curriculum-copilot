@@ -2,7 +2,7 @@
 """
 backfill_pdf_citation.py — (re)stamp `sourcePdfKey` onto every LearningComponent/Assessment node,
 for any course. Purely deterministic, no PDF re-read, no Claude call: citation.pdf_key_for_module(
-course_slug, pdf_path) from each course's own submit_batch_<course>.py MODULES dict is exactly
+course_slug, pdf_path) from each course's registry modules (COURSES) is exactly
 what build_course_from_batch() would stamp on for a fresh build -- this just (re)applies that same
 formula. Going forward, pdf_to_kg.py's build_graph()/combine_modules() do this at extraction time
 via their own source_pdf_key parameter (see batch_pipeline.py), so newly-ingested courses get this

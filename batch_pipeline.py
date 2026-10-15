@@ -1,52 +1,19 @@
 #!/usr/bin/env python3
 """
-batch_pipeline.py — shared submit/build logic for the text-first Claude Batch API ingestion
-pipeline, factored out of submit_batch_g8.py/build_batch_g8_course.py and
-submit_batch_v3.py/build_batch_v3_course.py once both courses turned out to need the exact same
-pdfium-extract -> batch -> poll -> combine_modules() steps, differing only in course name, module
-PDF paths, and output filenames.
+batch_pipeline.py — the Claude Batch API ingestion steps for one curriculum version, driven by
+ingest.py (which reads the curriculum, its modules and paths from the registry):
 
-build_course_from_batch() also runs the three deterministic post-processing fixes
-(backfill_page_labels, backfill_sibling_labels, backfill_page_rollups) in-memory before writing
-the course's *_nodes.jsonl/*_relationships.jsonl -- a newly-built course comes out already
-corrected, with no separate manual backfill step. Those three scripts remain independently runnable
-too (their standalone COURSES auto-discovery loop still works, e.g. to re-run all courses after a
-regex fix), they're just no longer required after a fresh build.
+  submit_course_batch()   pypdfium2 page text -> lesson-aligned batches -> ONE Batch API call
+                          (optionally only selected batches, for an update)
+  collect_batch_chunks()  poll until the batch ends, parse each result into a chunk
+  save_chunks() / load_saved_chunks()   every raw chunk kept, so versions can be rebuilt and
+                          updates reuse the chunks of unchanged pages
+  build_course()          merge chunks, build the graph, then labels, page ranges, repairs,
+                          citations and checks, all in memory, and write nodes/relationships JSONL
 
-A new course (e.g. Grade 6, Grade 7) needs two small files, not two ~130-line copies:
-
-    submit_batch_g6.py:
-        import batch_pipeline as bp
-        BASE = ".../SM G6: Teacher Editions/Teacher Edition by Module/"
-        MODULES = bp.discover_modules(BASE)  # {"Module 1": ".../Module 1.pdf", ...}, no need to
-                                              # hand-type paths or know the module count up front
-        COURSE_NODES_PATH = "data/grade6_nodes.jsonl"  # lets backfill_page_labels.py auto-discover
-        STATE_PATH = "data/batch_state/batch_g6_state.json"
-        if __name__ == "__main__":
-            bp.submit_course_batch("g6", MODULES, STATE_PATH)
-
-    build_batch_g6_course.py:
-        import batch_pipeline as bp
-        from submit_batch_g6 import MODULES, STATE_PATH
-        BASE = ".../SM G6: Teacher Editions/Teacher Edition by Module/"
-        MODULE_PDFS = MODULES  # same dict already has module -> pdf path
-        if __name__ == "__main__":
-            bp.build_course_from_batch(STATE_PATH, MODULE_PDFS, course_name="Grade 6 Math",
-                                        out_stem="data/grade6")
-
-Both submit_batch_g8.py/submit_batch_v3.py and build_batch_g8_course.py/build_batch_v3_course.py
-have been rewired onto this module (same behavior, verified against their pre-refactor output
-shape) -- they're the reference examples for a new course's two files.
-
-Why two files and not one shared "run everything" script: submit and build are separate process
-invocations on purpose (the batch takes hours; you submit, walk away, and poll/build later, often
-in a different terminal session or after a resubmit). Why per-course files at all rather than one
-generic parametrized script: backfill_page_labels.py's discover_courses() auto-detects every new
-course by importing every submit_batch_*.py in this directory and reading its module-level
-MODULES + COURSE_NODES_PATH -- a real file per course, however thin, is what makes that automatic.
-
-Usage: not run directly -- imported by each course's submit_batch_<course>.py /
-build_batch_<course>_course.py.
+submit and build are separate steps on purpose: the batch takes hours.
+build_course_from_batch() (collect + build into data/<stem>_*.jsonl) is kept for the original
+script-style call.
 """
 import glob
 import json
@@ -62,9 +29,8 @@ import citation
 import pdf_to_kg as p2k
 import real_content as rc
 
-load_dotenv()  # reads .env into os.environ if present -- ANTHROPIC_API_KEY, etc, so
-# submit_batch_*.py/build_batch_*_course.py work standalone (e.g. `python3 submit_batch_g5.py`)
-# without requiring the shell to already have the key exported; app.py does the same for Streamlit.
+load_dotenv()  # reads .env into os.environ if present -- ANTHROPIC_API_KEY, etc, so ingest.py
+# works standalone without the shell exporting the key; app.py does the same for Streamlit.
 
 CASE_PATH = os.path.join(os.path.dirname(__file__), "teks_math_case.json")
 # Renamed from the old /tmp/docling_cache -- deliberately a fresh path, not just a fresh dir under
@@ -144,9 +110,8 @@ def submit_course_batch(cache_tag, modules, state_path, custom_id_prefix="", onl
     rest reuse saved chunks, see changes.plan_module_update()). With nothing to submit, no API
     call is made and the state records batch_id None.
     """
-    # Deferred, like the backfill imports in build_course_from_batch(): lesson_pages imports
-    # backfill_page_labels, whose module-level discover_courses() imports every submit_batch_*.py,
-    # which import this module -- a top-level import here is circular.
+    # Deferred, like the backfill imports in build_course(): lesson_pages imports
+    # backfill_page_labels, which imports the registry at module level.
     import lesson_pages
 
     requests = []
@@ -328,12 +293,7 @@ def build_course(chunks_by_module, module_pdfs, course_name, nodes_path, rels_pa
           f"({n_lc} LearningComponent, {n_supp} from supplementary)", file=sys.stderr)
 
     print("\nPost-processing (page labels, sibling labels, page rollups)...", file=sys.stderr)
-    # Deferred imports: backfill_page_labels.py's own module-level `COURSES = discover_courses()`
-    # re-imports every submit_batch_*.py in this directory -- including whichever one is currently
-    # importing batch_pipeline to get here. Importing it at the top of this file would make that
-    # re-import happen while batch_pipeline itself is still mid-load (a real circular-import
-    # hazard); deferring it to inside this function means batch_pipeline is already fully loaded
-    # by the time it happens.
+    # Deferred imports: backfill_page_labels builds its COURSES from the registry at import time.
     from backfill_page_labels import apply as apply_page_labels
     from backfill_sibling_labels import apply as apply_sibling_labels
     from backfill_page_rollups import apply as apply_page_rollups

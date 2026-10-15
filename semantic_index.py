@@ -169,6 +169,9 @@ def index_nodes(client, openai_client, nodes, rels=()):
             # Portable PDF citation key (see citation.py) -- "" on nodes built before this field
             # existed, until backfill_pdf_citation.py stamps it on.
             "source_pdf_key": n["properties"].get("sourcePdfKey", ""),
+            # which base curriculum version / user view this point belongs to (registry scope),
+            # so search can be limited to one curriculum (Phase 3)
+            "scope": n["properties"].get("scope", ""),
         })
     if not documents:
         return 0

@@ -1,0 +1,412 @@
+[
+ {
+  "id": "bluebonnet-algebra-i",
+  "name": "Algebra I",
+  "subject": "math",
+  "publisher_profile": "bluebonnet_secondary",
+  "framework_id": "teks_math",
+  "citation_slug": "algebra1",
+  "v1_nodes_path": "data/algebra1_nodes.jsonl",
+  "modules": [
+   {
+    "module": "Module 1",
+    "pdf_path": "/home/talha/Downloads/SM Algebra I: Teacher Editions/Teacher Edition By Module/Algebra I Math Teacher Edition, Volume 1 Module 1.pdf",
+    "pdf_sha256": "62bfc63f5a31f9b8aa4ec36d68ac473894c60365e3760fef19a3b7cf6f0b5b99"
+   },
+   {
+    "module": "Module 2",
+    "pdf_path": "/home/talha/Downloads/SM Algebra I: Teacher Editions/Teacher Edition By Module/Algebra I Math Teacher Edition, Volume 1 Module 2.pdf",
+    "pdf_sha256": "23d4538943a096944cb77af8c402c10d0bc9195d3cef31c393beb3372c70c6b5"
+   },
+   {
+    "module": "Module 3",
+    "pdf_path": "/home/talha/Downloads/SM Algebra I: Teacher Editions/Teacher Edition By Module/Algebra I Math Teacher Edition, Volume 1 Module 3.pdf",
+    "pdf_sha256": "86dcae0872b33e8a452346a17b0e3b51b10f0f2a566cea5b5f722ee46c147244"
+   },
+   {
+    "module": "Module 4",
+    "pdf_path": "/home/talha/Downloads/SM Algebra I: Teacher Editions/Teacher Edition By Module/Algebra I Math Teacher Edition, Volume 2 Module 4.pdf",
+    "pdf_sha256": "a66dabfd85cc190597e308ec4a21d8859aa5ed1926bad1e63f1428e47ee4158c"
+   },
+   {
+    "module": "Module 5",
+    "pdf_path": "/home/talha/Downloads/SM Algebra I: Teacher Editions/Teacher Edition By Module/Algebra I Math Teacher Edition, Volume 2 Module 5.pdf",
+    "pdf_sha256": "148af580865077376fcbbd9f632d1ef946617e214d82254675167221b4fe1383"
+   }
+  ]
+ },
+ {
+  "id": "bluebonnet-grade-1-math",
+  "name": "Grade 1 Math",
+  "subject": "math",
+  "publisher_profile": "bluebonnet_k5",
+  "framework_id": "teks_math",
+  "citation_slug": "grade1",
+  "v1_nodes_path": "data/grade1_nodes.jsonl",
+  "modules": [
+   {
+    "module": "Module 1",
+    "pdf_path": "/home/talha/Downloads/G1/M G1 Module 1: Sums and Differences to 10/K-5 Math Grade 1 Module 1 Sums and Differences to 10, Teacher Edition.pdf",
+    "pdf_sha256": "a52d80540949559e1adc9f416af78384deb86d79e6102d1fd29beb623ee95ee1"
+   },
+   {
+    "module": "Module 2",
+    "pdf_path": "/home/talha/Downloads/G1/M G1 Module 2:  Introduction to Place Value Through Addition and Subtraction Within 20/K-5 Math Grade 1 Module 2 Introduction to Place Value Through Addition and Subtraction Within 20, Teacher Edition.pdf",
+    "pdf_sha256": "cca9b01608dd0b99fbd5e105d84dbaee70cd3f742933f7f844c02949edf1f1af"
+   },
+   {
+    "module": "Module 3",
+    "pdf_path": "/home/talha/Downloads/G1/M G1 Module 3: Ordering and Comparing Length Measurements as Numbers/K-5 Math Grade 1 Module 3 Ordering and Comparing Length Measurements as Numbers, Teacher Edition.pdf",
+    "pdf_sha256": "31411b9d58a0d272a083da3443a5c8e8bbfb31fd590a9c410cb685b2df10b6d1"
+   },
+   {
+    "module": "Module 4",
+    "pdf_path": "/home/talha/Downloads/G1/M G1 Module 4: Place Value, Comparison, Addition and Subtraction to 40/K-5 Math Grade 1 Module 4 Place Value, Comparison, Addition and Subtraction to 40, Teacher Edition.pdf",
+    "pdf_sha256": "6d8d8ac699855f168bb5c8385bb0bb40a05717eff4d3c1dae31cd47c2952f017"
+   },
+   {
+    "module": "Module 5",
+    "pdf_path": "/home/talha/Downloads/G1/M G1 Module 5: Identifying, Composing, and Partitioning Shapes/K-5 Math Grade 1 Module 5 Identifying, Composing, and Partitioning Shapes, Teacher Edition.pdf",
+    "pdf_sha256": "302eb7073aaa0e85c02c6f58040d9e0dc6c14d44898ad89d4b3ce106dc8da806"
+   },
+   {
+    "module": "Module 6",
+    "pdf_path": "/home/talha/Downloads/G1/M G1 Module 6: Place Value, Comparison, Understanding Income with Addition and Subtraction to 100/K-5 Math Grade 1 Module 6 Place Value, Comparison, Understanding Income with Addition and Subtraction to 100, Teacher Edition.pdf",
+    "pdf_sha256": "2237576374d6b28a75cbaf9d980a62a0173caba1a2a1ec8619a7c26b69c7c5a7"
+   }
+  ]
+ },
+ {
+  "id": "bluebonnet-grade-2-math",
+  "name": "Grade 2 Math",
+  "subject": "math",
+  "publisher_profile": "bluebonnet_k5",
+  "framework_id": "teks_math",
+  "citation_slug": "grade2",
+  "v1_nodes_path": "data/grade2_nodes.jsonl",
+  "modules": [
+   {
+    "module": "Module 1",
+    "pdf_path": "/home/talha/Downloads/G2/M G2 Module 1: Sums and Differences to 100/K-5 Math Grade 2 Module 1 Sums and Differences to 100, Teacher Edition.pdf",
+    "pdf_sha256": "a19c5a59449eb3340341cc5b419ca2cce103978317166601c6155b6296aac9a3"
+   },
+   {
+    "module": "Module 2",
+    "pdf_path": "/home/talha/Downloads/G2/M G2 Module 2: Addition and Subtraction of Length Units/K-5 Math Grade 2 Module 2 Addition and Subtraction of Length Units, Teacher Edition.pdf",
+    "pdf_sha256": "f78b35b8b6520cc31e4fa279a1b12b5d59063dc880e0341621e6dca9b4ba85b9"
+   },
+   {
+    "module": "Module 3",
+    "pdf_path": "/home/talha/Downloads/G2/M G2 Module 3: Place Value, Counting, and Comparison of Numbers to 1,200/K-5 Math Grade 2 Module 3 Place Value, Counting, and Comparison of Numbers to 1,200, Teacher Edition.pdf",
+    "pdf_sha256": "7a5fbf609324f21b0c0dbed8e3c7efd6ceaf41ed81d6be9a5793237c07b3a1dc"
+   },
+   {
+    "module": "Module 4",
+    "pdf_path": "/home/talha/Downloads/G2/M G2 Module 4: Addition and Subtraction Within 200 with Word Problems to 100/K-5 Math Grade 2 Module 4 Addition and Subtraction Within 200 with Word Problems to 100, Teacher Edition.pdf",
+    "pdf_sha256": "1f1a7177cd80b442e8507eb5d6f87c83fd27bcaa07fa9b88566dba6bab3f5aad"
+   },
+   {
+    "module": "Module 5",
+    "pdf_path": "/home/talha/Downloads/G2/M G2 Module 5: Addition and Subtraction Within 1,000 with Word Problems Within 1,000/K-5 Math Grade 2 Module 5 Addition and Subtraction Within 1,000 with Word Problems Within 1,000, Teacher Edition.pdf",
+    "pdf_sha256": "5905872695ed8e734fe68f84362b3d65aa4c123d73344f7f40aac1bc3fccdb73"
+   },
+   {
+    "module": "Module 6",
+    "pdf_path": "/home/talha/Downloads/G2/M G2 Module 6: Foundations of Multiplication, Division, and Area/K-5 Math Grade 2 Module 6 Foundations of Multiplication, Division, and Area, Teacher Edition.pdf",
+    "pdf_sha256": "e3afd691dd21ecbca096f5788e9cbd6776a40fd22eea0484b192d334e335e6fb"
+   },
+   {
+    "module": "Module 7",
+    "pdf_path": "/home/talha/Downloads/G2/M G2 Module 7: Problem Solving with Length, Money, and Data/K-5 Math Grade 2 Module 7 Problem Solving with Length, Money, and Data, Teacher Edition.pdf",
+    "pdf_sha256": "deaf12bde6d58aac4b11b5be20142c9f04ea35b2d703b7330863981238c025bb"
+   },
+   {
+    "module": "Module 8",
+    "pdf_path": "/home/talha/Downloads/G2/M G2 Module 8: Time, Shapes, and Fractions as Equal Parts of Shapes/K-5 Math Grade 2 Module 8 Time, Shapes, and Fractions as Equal Parts of Shapes, Teacher Edition.pdf",
+    "pdf_sha256": "6fa0eb3cc519deeda5b68053610031258635e3d6ffc93af44ef3927cdfe53bcc"
+   }
+  ]
+ },
+ {
+  "id": "bluebonnet-grade-3-math",
+  "name": "Grade 3 Math",
+  "subject": "math",
+  "publisher_profile": "bluebonnet_k5",
+  "framework_id": "teks_math",
+  "citation_slug": "grade3",
+  "v1_nodes_path": "data/grade3_nodes.jsonl",
+  "modules": [
+   {
+    "module": "Module 1",
+    "pdf_path": "/home/talha/Downloads/G3/M G3 Module 1: Properties of Multiplication and Division and Solving Problems with Units of 2-5 and 10/K-5 Math Grade 3 Module 1 Properties of Multiplication and Division and Solving Problems with Units of 2-5 and 10, Teacher Edition.pdf",
+    "pdf_sha256": "c12af3364b9cf1fda4c07f7aac6f64fee1336bb1c6d25fc2d2ef2096d6108f06"
+   },
+   {
+    "module": "Module 2",
+    "pdf_path": "/home/talha/Downloads/G3/M G3 Module 2: Place Value and Problem Solving with Units of Measure/K-5 Math Grade 3 Module 2 Place Value and Problem Solving with Units of Measure, Teacher Edition.pdf",
+    "pdf_sha256": "85ed8cb467f6cd0235e1fad4bf72bc1e98948f88ac81f97e0ddd82bc31520281"
+   },
+   {
+    "module": "Module 3",
+    "pdf_path": "/home/talha/Downloads/G3/M G3 Module 3: Multiplication and Division with Units of 0, 1, 6\u20139, and Multiples of 10/K-5 Math Grade 3 Module 3 Multiplication and Division with Units of 0, 1, 6\u20139, and Multiples of 10, Teacher Edition.pdf",
+    "pdf_sha256": "bb11088add6732ce892c9000d3f46822190d628afa143ad960600e4c58b31392"
+   },
+   {
+    "module": "Module 4",
+    "pdf_path": "/home/talha/Downloads/G3/M G3 Module 4: Multiplication and Area/K-5 Math Grade 3 Module 4 Multiplication and Area, Teacher Edition.pdf",
+    "pdf_sha256": "b6cc4ccf82b018d2ea51d1fab05047e7a00e379a9902c69746111a9d1e782dd5"
+   },
+   {
+    "module": "Module 5",
+    "pdf_path": "/home/talha/Downloads/G3/M G3 Module 5: Fractions as Numbers on the Number Line/K-5 Math Grade 3 Module 5 Fractions as Numbers on the Number Line, Teacher Edition.pdf",
+    "pdf_sha256": "dbaddad0234ef7842ac0645b8f2d9f00615e2c8dfd3a14277c4b102e1ab83274"
+   },
+   {
+    "module": "Module 6",
+    "pdf_path": "/home/talha/Downloads/G3/M G3 Module 6: Financial Literacy and Data/K-5 Math Grade 3 Module 6 Financial Literacy and Data, Teacher Edition.pdf",
+    "pdf_sha256": "f57c7c164937718cc83e1c0b9f463431e4cde05c197c6e6a66bce86d6314e1b6"
+   },
+   {
+    "module": "Module 7",
+    "pdf_path": "/home/talha/Downloads/G3/M G3 Module 7: Geometry and Measurement Word Problems/K-5 Math Grade 3 Module 7 Geometry and Measurement Word Problems, Teacher Edition.pdf",
+    "pdf_sha256": "8190400e663ddd653d60d164bd288580d1aaaec6990c133903d680d87771e8c1"
+   }
+  ]
+ },
+ {
+  "id": "bluebonnet-grade-4-math",
+  "name": "Grade 4 Math",
+  "subject": "math",
+  "publisher_profile": "bluebonnet_k5",
+  "framework_id": "teks_math",
+  "citation_slug": "grade4",
+  "v1_nodes_path": "data/grade4_nodes.jsonl",
+  "modules": [
+   {
+    "module": "Module 1",
+    "pdf_path": "/home/talha/Downloads/G4/M G4 Module 1: Place Value, Rounding, and Algorithms for Addition and Subtraction/K-5 Math Grade 4 Module 1 Place Value, Rounding, and Algorithms for Addition and Subtraction, Teacher Edition.pdf",
+    "pdf_sha256": "509814820fa5ea7e8947056bd532fe80209fc389fc1ab5b32f4d97b5735ba442"
+   },
+   {
+    "module": "Module 2",
+    "pdf_path": "/home/talha/Downloads/G4/M G4 Module 2: Unit Conversions and Problem Solving with Metric Measurements/K-5 Math Grade 4 Module 2 Unit Conversions and Problem Solving with Metric Measurements, Teacher Edition.pdf",
+    "pdf_sha256": "b6052477c47ddfd09400670d0ff7a0bb98b1d9b93f2da14f655a9e42a803323f"
+   },
+   {
+    "module": "Module 3",
+    "pdf_path": "/home/talha/Downloads/G4/M G4 Module 3: Multi-Digit Multiplication and Division/K-5 Math Grade 4 Module 3 Multi-Digit Multiplication and Division, Teacher Edition.pdf",
+    "pdf_sha256": "1b232aa1d5e5412ee5ead00f880edbf552caf42a7e068db0fc0dd28fcdb54a26"
+   },
+   {
+    "module": "Module 4",
+    "pdf_path": "/home/talha/Downloads/G4/M G4 Module 4: Angle Measure and Plane Figures/K-5 Math Grade 4 Module 4 Angle Measure and Plane Figures, Teacher Edition.pdf",
+    "pdf_sha256": "4708ddc7d4a54c7974ed396326469e03547c1e6e597d3d6c8897db1888140b56"
+   },
+   {
+    "module": "Module 5",
+    "pdf_path": "/home/talha/Downloads/G4/M G4 Module 5: Fraction Equivalence, Ordering, and Operations/K-5 Math Grade 4 Module 5 Fraction Equivalence, Ordering, and Operations, Teacher Edition.pdf",
+    "pdf_sha256": "427b402097077d34c0fd53b35e2902cb30decea6f5b98d2ef18af5ecb74f6fad"
+   },
+   {
+    "module": "Module 6",
+    "pdf_path": "/home/talha/Downloads/G4/M G4 Module 6: Introduction to Decimals and Financial Literacy/K-5 Math Grade 4 Module 6 Introduction to Decimals and Financial Literacy, Teacher Edition.pdf",
+    "pdf_sha256": "757e31229f013f904a137238bdecfb696f60008b393d2e2d2d6f89d66c0a55fe"
+   },
+   {
+    "module": "Module 7",
+    "pdf_path": "/home/talha/Downloads/G4/M G4 Module 7: Exploring Measurement with Multiplication and Data/K-5 Math Grade 4 Module 7 Exploring Measurement with Multiplication and Data, Teacher Edition.pdf",
+    "pdf_sha256": "f75d5f0859eb59f73ccd697511263b53f031c0d01b7f14db7103e3756257f4ad"
+   }
+  ]
+ },
+ {
+  "id": "bluebonnet-grade-5-math",
+  "name": "Grade 5 Math",
+  "subject": "math",
+  "publisher_profile": "bluebonnet_k5",
+  "framework_id": "teks_math",
+  "citation_slug": "grade5",
+  "v1_nodes_path": "data/grade5_nodes.jsonl",
+  "modules": [
+   {
+    "module": "Module 1",
+    "pdf_path": "/home/talha/Downloads/G5/M G5 Module 1: Place Value and Decimals/K-5 Math Grade 5 Module 1 Place Value and Decimals, Teacher Edition.pdf",
+    "pdf_sha256": "18c038f0c79b72265a36c1db44be612cae48e8a3dd382fa7c4e67c506f0b39d5"
+   },
+   {
+    "module": "Module 2",
+    "pdf_path": "/home/talha/Downloads/G5/M G5 Module 2: Multi-Digit Whole Number and Decimal Operations/K-5 Math Grade 5 Module 2 Multi-Digit Whole Number and Decimal Operations, Teacher Edition.pdf",
+    "pdf_sha256": "578a781b520cd3212dae6a0a639a468fac92bef20d78e705d3ae5f77e700b598"
+   },
+   {
+    "module": "Module 3",
+    "pdf_path": "/home/talha/Downloads/G5/M G5 Module 3: Addition and Subtraction of Fractions/K-5 Math Grade 5 Module 3 Addition and Subtraction of Fractions, Teacher Edition.pdf",
+    "pdf_sha256": "146189fad86dae4a8f5af08e5d0c4df0dcffeb3d889769e028388240aa0bf110"
+   },
+   {
+    "module": "Module 4",
+    "pdf_path": "/home/talha/Downloads/G5/M G5 Module 4: Multiplication and Division of Fractions/K-5 Math Grade 5 Module 4 Multiplication and Division of Fractions, Teacher Edition.pdf",
+    "pdf_sha256": "656ea7a4fd092675559ac681f10c78ac051c213da1e2a3b9ed56e9d2f050920b"
+   },
+   {
+    "module": "Module 5",
+    "pdf_path": "/home/talha/Downloads/G5/M G5 Module 5: Addition and Multiplication with Volume and Area/K-5 Math Grade 5 Module 5 Addition and Multiplication with Volume and Area, Teacher Edition.pdf",
+    "pdf_sha256": "c23471e8c138018a623395e8a465135391436ead612275d4a38d957430ae3736"
+   },
+   {
+    "module": "Module 6",
+    "pdf_path": "/home/talha/Downloads/G5/M G5 Module 6: Problem Solving with the Coordinate Plane and Data/K-5 Math Grade 5 Module 6 Problem Solving with the Coordinate Plane and Data, Teacher Edition.pdf",
+    "pdf_sha256": "0922e0c67a2e9c041c9468fff230a8bc26bcb53727745411dc239fc0ee85e6af"
+   }
+  ]
+ },
+ {
+  "id": "bluebonnet-grade-6-math",
+  "name": "Grade 6 Math",
+  "subject": "math",
+  "publisher_profile": "bluebonnet_secondary",
+  "framework_id": "teks_math",
+  "citation_slug": "grade6",
+  "v1_nodes_path": "data/grade6_nodes.jsonl",
+  "modules": [
+   {
+    "module": "Module 1",
+    "pdf_path": "/home/talha/Downloads/SM G6: Teacher Editions/Teacher Edition by Module/Sixth Grade Teacher Edition, Volume 1 Module 1.pdf",
+    "pdf_sha256": "83e0190ab326fabb126274db2767e926cf3285766c4918f4111f212db1141593"
+   },
+   {
+    "module": "Module 2",
+    "pdf_path": "/home/talha/Downloads/SM G6: Teacher Editions/Teacher Edition by Module/Sixth Grade Teacher Edition, Volume 1 Module 2.pdf",
+    "pdf_sha256": "5791dadb17c0af29c76ff130cae1a778dc9ecdd518b2517b5c491156c281538d"
+   },
+   {
+    "module": "Module 3",
+    "pdf_path": "/home/talha/Downloads/SM G6: Teacher Editions/Teacher Edition by Module/Sixth Grade Teacher Edition, Volume 1 Module 3.pdf",
+    "pdf_sha256": "a570c473e30842910f8373fa9cb887708ed8da8c52b7223d6d9d8b02e28b3884"
+   },
+   {
+    "module": "Module 4",
+    "pdf_path": "/home/talha/Downloads/SM G6: Teacher Editions/Teacher Edition by Module/Sixth Grade Teacher Edition, Volume 2 Module 4.pdf",
+    "pdf_sha256": "54943e9b04df89799b412c898ec5b3255ff7da2bf204de24d080aa1af7e3d2b1"
+   },
+   {
+    "module": "Module 5",
+    "pdf_path": "/home/talha/Downloads/SM G6: Teacher Editions/Teacher Edition by Module/Sixth Grade Teacher Edition, Volume 2 Module 5.pdf",
+    "pdf_sha256": "d371586dde14fb434feb57467c4042891a0c8a522ef9069f949b0d4fb63e16d3"
+   }
+  ]
+ },
+ {
+  "id": "bluebonnet-grade-7-math",
+  "name": "Grade 7 Math",
+  "subject": "math",
+  "publisher_profile": "bluebonnet_secondary",
+  "framework_id": "teks_math",
+  "citation_slug": "grade7",
+  "v1_nodes_path": "data/grade7_nodes.jsonl",
+  "modules": [
+   {
+    "module": "Module 1",
+    "pdf_path": "/home/talha/Downloads/SM G7: Teacher Editions/Teacher Edition by Module/Seventh Grade Math Teacher Edition, Volume 1 Module 1.pdf",
+    "pdf_sha256": "097146fc310dc617d8452996a70ec84fd623f4917cf957f801e16f4055fe28b5"
+   },
+   {
+    "module": "Module 2",
+    "pdf_path": "/home/talha/Downloads/SM G7: Teacher Editions/Teacher Edition by Module/Seventh Grade Math Teacher Edition, Volume 1 Module 2.pdf",
+    "pdf_sha256": "41fdd9c7fc04271a4b39806ad72a14d288eba9823047bfc1c338071f5d32540c"
+   },
+   {
+    "module": "Module 3",
+    "pdf_path": "/home/talha/Downloads/SM G7: Teacher Editions/Teacher Edition by Module/Seventh Grade Math Teacher Edition, Volume 1 Module 3.pdf",
+    "pdf_sha256": "873664fb8aece91a9a7001d5ceefb34f3a1501f7ac92af50c3f6f7d1dab981e8"
+   },
+   {
+    "module": "Module 4",
+    "pdf_path": "/home/talha/Downloads/SM G7: Teacher Editions/Teacher Edition by Module/Seventh Grade Math Teacher Edition, Volume 2 Module 4.pdf",
+    "pdf_sha256": "43b36e29b7e2f1014f5ff12982e75ec8612595bd2b3e68519054eea7e68280c7"
+   },
+   {
+    "module": "Module 5",
+    "pdf_path": "/home/talha/Downloads/SM G7: Teacher Editions/Teacher Edition by Module/Seventh Grade Math Teacher Edition, Volume 2 Module 5.pdf",
+    "pdf_sha256": "b814fcb79e9bef7a4f470b3b8c9df3851afa190a1178026959bd028cfc9ef204"
+   }
+  ]
+ },
+ {
+  "id": "bluebonnet-grade-8-math",
+  "name": "Grade 8 Math",
+  "subject": "math",
+  "publisher_profile": "bluebonnet_secondary",
+  "framework_id": "teks_math",
+  "citation_slug": "grade8",
+  "v1_nodes_path": "data/grade8_nodes.jsonl",
+  "modules": [
+   {
+    "module": "Module 1",
+    "pdf_path": "/home/talha/Downloads/SM G8: Teacher Editions/Teacher Edition by Module/Eighth Grade Math Teacher Edition, Volume 1 Module 1.pdf",
+    "pdf_sha256": "96ea6abac96a37727f21a9973f44ff4fee5735cd89d7557bc6acd9a85b5bd251"
+   },
+   {
+    "module": "Module 2",
+    "pdf_path": "/home/talha/Downloads/SM G8: Teacher Editions/Teacher Edition by Module/Eighth Grade Math Teacher Edition, Volume 1 Module 2.pdf",
+    "pdf_sha256": "5c8d94c3758ca8b2937197d4662f233023bb9b863f68dedeb17ecfa88fabc481"
+   },
+   {
+    "module": "Module 3",
+    "pdf_path": "/home/talha/Downloads/SM G8: Teacher Editions/Teacher Edition by Module/Eighth Grade Math Teacher Edition, Volume 2 Module 3.pdf",
+    "pdf_sha256": "f61b3d6564c8fdc77abbf00d4e6178f98e87a609e3e4fb4cd5236351d283579e"
+   },
+   {
+    "module": "Module 4",
+    "pdf_path": "/home/talha/Downloads/SM G8: Teacher Editions/Teacher Edition by Module/Eighth Grade Math Teacher Edition, Volume 2 Module 4.pdf",
+    "pdf_sha256": "a472a359d4a3857a2beb75d37a750829b2fb96c44c5dc4547f052ced7e81a22c"
+   },
+   {
+    "module": "Module 5",
+    "pdf_path": "/home/talha/Downloads/SM G8: Teacher Editions/Teacher Edition by Module/Eighth Grade Math Teacher Edition, Volume 2 Module 5.pdf",
+    "pdf_sha256": "a2df1580bfcb5cf9e1148327fc97586642230417f709d9a8f9e0f083ea431d64"
+   }
+  ]
+ },
+ {
+  "id": "bluebonnet-grade-k-math",
+  "name": "Grade K Math",
+  "subject": "math",
+  "publisher_profile": "bluebonnet_k5",
+  "framework_id": "teks_math",
+  "citation_slug": "gradek",
+  "v1_nodes_path": "data/gradek_nodes.jsonl",
+  "modules": [
+   {
+    "module": "Module 1",
+    "pdf_path": "/home/talha/Downloads/GK/M K Module 1: Numbers to 10/K-5 Math Grade K Module 1 Numbers to 10, Teacher Edition.pdf",
+    "pdf_sha256": "e250396c871eb3083cb7ae70cf3cc5f3865655eec34c731c27014dc5fffbb3a0"
+   },
+   {
+    "module": "Module 2",
+    "pdf_path": "/home/talha/Downloads/GK/M K Module 2: Two-Dimensional and Three-Dimensional Shapes/K-5 Math Grade K Module 2_ Two-Dimensional and Three-Dimensional Shapes, Teacher Edition.pdf",
+    "pdf_sha256": "4ca5d36d47bbe881c985b5f69a3f1edbd2b00c720173d44ec3a018c146917489"
+   },
+   {
+    "module": "Module 3",
+    "pdf_path": "/home/talha/Downloads/GK/M K Module 3: Comparison of Length, Weight, Capacity, and Numbers to 10/K-5 Math Grade K Module 3 Comparison of Length, Weight, Capacity, and Numbers to 10, Teacher Edition.pdf",
+    "pdf_sha256": "f63263546fa348d8538f0bf5072881088ce7e31c0bbb7f9baa2ec22d59e401f7"
+   },
+   {
+    "module": "Module 4",
+    "pdf_path": "/home/talha/Downloads/GK/M K Module 4: Number Pairs, Addition and Subtraction to 10/K-5 Math Grade K Module 4 Number Pairs, Addition and Subtraction to 10, Teacher Edition.pdf",
+    "pdf_sha256": "ada87bf2c5a720bfb4c27c64c19d318e2ea499401a361c77500b8167e4b3e8b1"
+   },
+   {
+    "module": "Module 5",
+    "pdf_path": "/home/talha/Downloads/GK/M K Module 5: Numbers 10-20, Counting to 100, and Understanding Work/K-5 Math Grade K Module 5 Numbers 10-20, Counting to 100, and Understanding Work, Teacher Edition.pdf",
+    "pdf_sha256": "54f4cb6e970e43b9941df1a0828658fcd06d0024936d4370e06d20555db7707a"
+   },
+   {
+    "module": "Module 6",
+    "pdf_path": "/home/talha/Downloads/GK/M K Module 6: Analyzing, Comparing, and Composing Shapes/K-5 Math Grade K Module 6 Analyzing, Comparing, and Composing Shapes, Teacher Edition.pdf",
+    "pdf_sha256": "56bfb28f422fe3a7840ebff1820fb13b1e502e0fcda95ddc52dd8d5fde3349fa"
+   }
+  ]
+ }
+]

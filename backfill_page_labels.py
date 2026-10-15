@@ -60,10 +60,16 @@ def _page_text(page):
 
 
 def discover_courses():
-    """{course's data/*_nodes.jsonl path: {module name: pdf path}}, built by importing every
-    submit_batch_*.py in this directory and reading its MODULES + COURSE_NODES_PATH -- so a new
-    course is picked up automatically as soon as its ingestion script exists, with no separate
-    registration step here to remember."""
+    """{course's nodes.jsonl path: {module name: pdf path}} for the latest ready version of every
+    base curriculum in the registry (registry.published_courses()). Falls back to the
+    pre-registry scan -- importing every submit_batch_*.py in this directory and reading its
+    MODULES + COURSE_NODES_PATH -- only while the registry is still empty (before
+    import_existing.py has run)."""
+    import registry
+    with registry.connect() as conn:
+        courses = registry.published_courses(conn)
+    if courses:
+        return courses
     courses = {}
     for script_path in sorted(glob.glob("submit_batch_*.py")):
         spec = importlib.util.spec_from_file_location(script_path[:-3], script_path)

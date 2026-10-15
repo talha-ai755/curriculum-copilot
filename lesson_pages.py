@@ -37,6 +37,8 @@ _K5_LINE = re.compile(r"(?:^|\n)\s*(?:\S{1,6}\s+)?Lesson\s+(\d+):")  # "21 Lesso
 _K5_OPENER = re.compile(r"(?:^|\n)\s*(?:\S{1,6}\s+)?Lesson\s+(\d+)\s*\n")
 _OBJECTIVE = re.compile(r"\bObjective\s*:")
 EDGE = 300
+_K5_PAGE_NUMBER = [re.compile(r"(?:^|\n)\s*(\d{1,3})\s+(?:Lesson|Topic|Module)\s+\w+"),   # "25 Lesson 1:"
+                   re.compile(r"(?:Lesson|Topic)\s+\w+:\s*(\d{1,3})\s*(?:\n|$)")]        # "Lesson 14: 169"
 # Some Grade 6 pages extract the header doubled and interleaved:
 # "MODULE 1  MODULE 1•TOPIC 1  TOPIC 1•LESSON 1  LESSON 1"
 _MS_HEADER = re.compile(r"MODULE\s*\d+(?:\W+MODULE\s*\d+)?\W{1,6}TOPIC\s*(\d+)(?:\W+TOPIC\s*\d+)?"
@@ -58,6 +60,7 @@ def scan_pdf(pdf_path):
     the build calls this before and after its structural repairs. Callers must not mutate the
     returned dicts."""
     labels, lesson_of = {}, {}
+    k5_pages, offset_votes = [], {}
     doc = pdfium.PdfDocument(pdf_path)
     try:
         for i in range(len(doc)):
@@ -72,6 +75,13 @@ def scan_pdf(pdf_path):
             label = extract_label(head) or extract_label(tail)
             if label:
                 labels[i + 1] = label
+            if _K5_PAGE.search(txt):
+                k5_pages.append(i + 1)
+                for rx in _K5_PAGE_NUMBER:
+                    for zone in (txt[:EDGE], txt[-EDGE:]):
+                        for n in rx.findall(zone):
+                            off = i + 1 - int(n)
+                            offset_votes[off] = offset_votes.get(off, 0) + 1
             if _ANSWER_KEY.search(txt[:EDGE]) or _ANSWER_KEY.search(txt[-EDGE:]):
                 continue
             if _K5_PAGE.search(txt):
@@ -90,6 +100,18 @@ def scan_pdf(pdf_path):
                 lesson_of[i + 1] = (_norm_num(m.group(1)), _norm_num(m.group(2)))
     finally:
         doc.close()
+    # K-5 printed page numbers: extract_label() only knows the 6-8 footer ("<label> MODULE N"),
+    # so it finds a label on few K-5 pages. Their number sits next to the running line instead
+    # ("25 Lesson 1:", "Lesson 14: 169") and is the PDF page minus a fixed per-module offset
+    # (3 in every K-5 module checked: 94-100% of votes; Claude's own extracted labels agree
+    # ~99%). Fill unlabelled K-5 pages only when the module's votes clearly agree.
+    total = sum(offset_votes.values())
+    if total >= 10:  # short modules have few running lines (Grade 2 Module 1: 19 votes, all agreeing)
+        off, n = max(offset_votes.items(), key=lambda kv: kv[1])
+        if n / total >= 0.9:
+            for p in k5_pages:
+                if p not in labels and p - off >= 1:
+                    labels[p] = str(p - off)
     return labels, lesson_of
 
 

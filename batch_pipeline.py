@@ -59,7 +59,6 @@ import anthropic
 from dotenv import load_dotenv
 
 import citation
-import lesson_pages
 import pdf_to_kg as p2k
 import real_content as rc
 
@@ -142,6 +141,11 @@ def submit_course_batch(cache_tag, modules, state_path, custom_id_prefix=""):
     unique enough to be readable in the Anthropic console; doesn't affect parsing since
     custom_id_map (not the string itself) is what build_course_from_batch() keys off of.
     """
+    # Deferred, like the backfill imports in build_course_from_batch(): lesson_pages imports
+    # backfill_page_labels, whose module-level discover_courses() imports every submit_batch_*.py,
+    # which import this module -- a top-level import here is circular.
+    import lesson_pages
+
     requests = []
     custom_id_map = {}
     for module_name, pdf_path in modules.items():

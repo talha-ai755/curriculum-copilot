@@ -195,7 +195,14 @@ def docling_page_text(pdf_path):
     """Convert a PDF via docling and group its extracted item text by absolute PDF page number.
     Returns {page_no (int): text (str)}. Lazy-imports docling so files that only need
     build_page_batches()/extract_from_text() (fed pre-reconstructed text some other way, e.g.
-    from an already-indexed Qdrant collection) don't need docling installed."""
+    from an already-indexed Qdrant collection) don't need docling installed.
+
+    NOT used anywhere in the active pipeline (as of the pypdfium2 switch -- both Claude's batch
+    extraction input and the real_pages verbatim-sourceText override use pdfium_page_text()
+    instead). Kept as a standalone utility for comparison/debugging: confirmed live that docling
+    silently drops content on dense/tabular page layouts (e.g. Pacing Guide tables) -- one page
+    returned 290 chars via this function where the real page has 2004 via pdfium_page_text(), no
+    error or signal anything was missing."""
     from docling.document_converter import DocumentConverter
     converter = DocumentConverter()
     doc = converter.convert(pdf_path).document
@@ -208,19 +215,57 @@ def docling_page_text(pdf_path):
     return {p: " ".join(t) for p, t in pages.items()}
 
 
-def build_page_batches(page_text, batch_size=25):
-    """page_text: {pdf_page (int) -> text} for ONE module (already reconstructed from docling,
-    e.g. via build_content_index.py's build_page_text() grouping curriculum_raw_text chunks by
-    page). Yields (first_page, last_page, labeled_text) — labeled_text has every page's real
-    number inline ('=== PDF PAGE N ===') so Claude only ever has to copy a number it was already
-    given, never count/guess one. Batches are plain text, not base64 PDF -- much cheaper per
-    token, so bigger batches than the old 15-page PDF-chunk convention are practical."""
+def pdfium_page_text(pdf_path):
+    """{page_no (1-indexed int): text (str)} via pypdfium2 (Google's PDFium) -- the source for
+    BOTH Claude's batch extraction input (see batch_pipeline.cached_page_text()) and the
+    real_pages verbatim-sourceText override (see build_graph()'s docstring). NOT docling_page_
+    text() -- confirmed live against docling on the same pages: complete (no silently-dropped
+    table/list content), fast (~11s for a 365-page module), same library Page Inspector already
+    uses for rendering."""
+    import pypdfium2 as pdfium
+    doc = pdfium.PdfDocument(pdf_path)
+    try:
+        pages = {}
+        for i in range(len(doc)):
+            page = doc[i]
+            textpage = page.get_textpage()
+            try:
+                pages[i + 1] = textpage.get_text_range() or ""
+            finally:
+                textpage.close()
+                page.close()
+        return pages
+    finally:
+        doc.close()
+
+
+def build_page_batches(page_text, batch_size=25, overlap=3):
+    """page_text: {pdf_page (int) -> text} for ONE module, from pdfium_page_text(). Yields
+    (first_page, last_page, labeled_text) — labeled_text has every page's real number inline
+    ('=== PDF PAGE N ===') so Claude only ever has to copy a number it was already given, never
+    count/guess one. Batches are plain text, not base64 PDF -- much cheaper per token, so bigger
+    batches than the old 15-page PDF-chunk convention are practical.
+
+    `overlap`: the last `overlap` pages of the PREVIOUS batch are repeated at the START of this
+    one (as extra context only -- `first_page`/`last_page` still describe the non-overlapping
+    "core" window, so custom_id/state tracking is unaffected). Fixes a confirmed live bug: with
+    overlap=0, a topic whose heading page fell in batch N but whose lesson content continued into
+    batch N+1 gave batch N+1 no way to see that heading at all -- it either extracted a
+    blank-titled phantom topic for its own real content (see merge()'s _reconcile_blank_topics)
+    or, worse, misattributed that content to a different topic title actually visible in its own
+    window (Grade 3 Module 3: 23 real multiplication lessons ended up titled "Division Using
+    Units of 2 and 3" this way). A few pages of leading context is enough for Claude to recognize
+    "this continues the topic introduced just before" without re-processing whole extra chunks.
+    merge()'s outcome dedup (keyed on (page, outcome) -- see the `seen_outcome_keys` loop) is
+    what keeps this overlap from creating duplicate LearningComponent nodes for the shared pages."""
     pages = sorted(page_text)
     for start in range(0, len(pages), batch_size):
-        batch_pages = pages[start:start + batch_size]
+        core = pages[start:start + batch_size]
+        overlap_pages = pages[max(0, start - overlap):start]
+        window = overlap_pages + core
         labeled_text = "\n\n".join(
-            f"=== PDF PAGE {p} ===\n{page_text[p]}" for p in batch_pages)
-        yield batch_pages[0], batch_pages[-1], labeled_text
+            f"=== PDF PAGE {p} ===\n{page_text[p]}" for p in window)
+        yield core[0], core[-1], labeled_text
 
 
 def text_message_params(labeled_text, page_range_label):
@@ -250,14 +295,24 @@ def extract_from_text(client, labeled_text, page_range_label):
 
 
 def combine_modules(chunk_lists, jurisdiction, framework, case, course_name=None,
-                     real_materials_list=None):
+                     real_materials_list=None, real_pages_list=None, source_pdf_keys=None):
     """Merge several modules' chunk-lists into ONE deduped graph. Each list is the chunks for
     one PDF/module. Shared standards collapse by ID; optionally add a Course that hasPart-links
     every module.
 
     `real_materials_list`, if given, is a list parallel to `chunk_lists` -- one
     real_content.find_real_materials()-shaped dict (or None) per module, forwarded to
-    build_graph() to override materials_needed with the Pacing Guide's literal text."""
+    build_graph() to override materials_needed with the Pacing Guide's literal text.
+
+    `real_pages_list`, if given, is a list parallel to `chunk_lists` -- one
+    pdfium_page_text()-shaped {page: text} dict (or None) per module, forwarded to build_graph()
+    to override sourceText with the real page text where that's unambiguous (see build_graph's
+    docstring). NOT docling_page_text() -- see that function's docstring for why (silently drops
+    content on dense/tabular layouts; confirmed live, not tolerable for a field promised verbatim).
+
+    `source_pdf_keys`, if given, is a list parallel to `chunk_lists` -- one citation.
+    pdf_key_for_module()-produced string (or None) per module, stamped as `sourcePdfKey` onto
+    every LearningComponent/Assessment node from that module (see citation.py)."""
     nodes, rels, seen_n, seen_r = [], [], set(), set()
     module_ids = []
     for i, chunks in enumerate(chunk_lists):
@@ -272,8 +327,11 @@ def combine_modules(chunk_lists, jurisdiction, framework, case, course_name=None
                         if stt:
                             standards[c] = stt
         real_materials = real_materials_list[i] if real_materials_list else None
+        real_pages = real_pages_list[i] if real_pages_list else None
+        source_pdf_key = source_pdf_keys[i] if source_pdf_keys else None
         n, r = build_graph(module, topics, standards, assessments, jurisdiction, framework, case,
-                           real_materials=real_materials,
+                           real_materials=real_materials, real_pages=real_pages,
+                           source_pdf_key=source_pdf_key,
                            scope=course_name or "", supplementary=supplementary)
         for x in n:
             if x["identifier"] not in seen_n:
@@ -313,6 +371,106 @@ def jsonify_topic(v):
     each lesson's `teks`) -- convert them all to sorted lists so the topic is JSON-dumpable."""
     return {**v, "teks": sorted(v["teks"]), "readiness": sorted(v["readiness"]),
             "lessons": {lk: {**l, "teks": sorted(l["teks"])} for lk, l in v["lessons"].items()}}
+
+
+def _fold_topic(dst, src):
+    """Fold `src`'s accumulated topic data into `dst` in place -- same first-non-empty/
+    last-non-empty/union semantics merge() already uses when folding a raw per-chunk topic dict,
+    just applied topic-dict-to-topic-dict (see _reconcile_blank_topics)."""
+    dst["title"] = dst["title"] or src["title"]
+    dst["sessions"] = dst["sessions"] or src["sessions"]
+    dst["teks"].update(src["teks"])
+    dst["readiness"].update(src["readiness"])
+    dst["outcomes"].extend(src["outcomes"])
+    dst["page_start_label"] = dst["page_start_label"] or src["page_start_label"]
+    dst["page_end_label"] = src["page_end_label"] or dst["page_end_label"]
+    if dst["page_start"] is None:
+        dst["page_start"] = src["page_start"]
+    elif src["page_start"] is not None:
+        dst["page_start"] = min(dst["page_start"], src["page_start"])
+    if src["page_end"] is not None:
+        dst["page_end"] = max(dst["page_end"], src["page_end"]) if dst["page_end"] is not None \
+            else src["page_end"]
+    for lkey, l in src["lessons"].items():
+        if lkey not in dst["lessons"]:
+            dst["lessons"][lkey] = l
+            continue
+        dl = dst["lessons"][lkey]
+        dl["title"] = dl["title"] or l["title"]
+        dl["teks"].update(l["teks"])
+        dl["outcomes"].extend(l["outcomes"])
+        for m in l["materials_needed"]:
+            if m not in dl["materials_needed"]:
+                dl["materials_needed"].append(m)
+        dl["page_start_label"] = dl["page_start_label"] or l["page_start_label"]
+        dl["page_end_label"] = l["page_end_label"] or dl["page_end_label"]
+        if dl["page_start"] is None:
+            dl["page_start"] = l["page_start"]
+        if l["page_end"] is not None:
+            dl["page_end"] = l["page_end"]
+
+
+def _reconcile_blank_topics(topics):
+    """Fix a chunking artifact: each 25-page batch is extracted independently (see
+    batch_pipeline.submit_course_batch's build_page_batches(batch_size=25)), so a Topic whose
+    real content spans more than one chunk only shows its title/number heading in whichever
+    chunk happens to contain that heading page -- a LATER chunk that picks up the same topic
+    mid-stream (no heading visible in its own 25-page window) has no way to know the topic's
+    number/title, and merge()'s `key = t["number"] or t["title"]` then keys that chunk's real
+    lesson content under a brand-new blank-title topic entry instead of folding it into the real
+    one. Confirmed live: Grade 3 Module 3's "Multiplication and the Meaning of the Factors"
+    (page 18) had a same-module blank-title phantom starting page 23, carrying 177 real
+    LearningComponent descendants that belonged under the named topic.
+
+    Fix: for every blank-title topic in this module, try three signals in order of reliability:
+      1. EXACT topic-number match against a named (real-title) topic (handles the case where the
+         continuation chunk still echoed the same topic number even without the title).
+      2. LESSON-NUMBER CONTINUITY: a continuation chunk's lessons pick up right after the real
+         topic's own last-known lesson number (e.g. blank topic's lessons start at 5, and exactly
+         one named topic in this module tops out at lesson 4) -- a much stronger signal than raw
+         page proximity, confirmed necessary live: Grade 3 Module 3 had two named topics starting
+         only ~2-5 pages apart ("Multiplication and the Meaning of the Factors" and "Multiplication
+         Using Units of 2 and 3", both page ~21), so nearest-page-start alone picked the wrong one
+         for a blank topic whose real lessons continued the FIRST one's numbering, not the second's.
+      3. PAGE PROXIMITY fallback: whichever named topic's page_start is closest below the blank
+         topic's own page_start (a continuation always starts later than its real topic's own
+         heading page, never earlier) -- only used when lesson numbers aren't available/numeric on
+         either side.
+    Folds via _fold_topic (same first-non-empty/union semantics as the rest of merge(), not a
+    guess) then drops the blank key entirely. A blank topic with no named topic to attach to at
+    all (e.g. genuinely the module's very first topic, extraction never captured its heading
+    anywhere) is left as its own entry -- reconciling it would require inventing a title, which is
+    worse than leaving it honestly unnamed."""
+    def _lesson_nums(t):
+        nums = [_numeric_label(l.get("number")) for l in t["lessons"].values()]
+        return [n for n in nums if n is not None]
+
+    named = [(k, t) for k, t in topics.items() if t["title"]]
+    blank_keys = [k for k, t in topics.items() if not t["title"]]
+    for bkey in blank_keys:
+        blank = topics[bkey]
+        target = None
+        if blank["number"]:
+            target = next((t for k, t in named if t["number"] == blank["number"]), None)
+        if target is None:
+            blank_nums = _lesson_nums(blank)
+            if blank_nums:
+                blank_min = min(blank_nums)
+                continuations = []
+                for k, t in named:
+                    named_nums = _lesson_nums(t)
+                    if named_nums and max(named_nums) < blank_min:
+                        continuations.append((max(named_nums), t))
+                if continuations:
+                    target = max(continuations, key=lambda x: x[0])[1]
+        if target is None and blank["page_start"] is not None:
+            candidates = [t for k, t in named if t["page_start"] is not None
+                          and t["page_start"] <= blank["page_start"]]
+            if candidates:
+                target = max(candidates, key=lambda t: t["page_start"])
+        if target is not None:
+            _fold_topic(target, blank)
+            del topics[bkey]
 
 
 def merge(chunks):
@@ -361,8 +519,18 @@ def merge(chunks):
                     "page_start": None, "page_end": None})
                 curl["title"] = curl["title"] or l.get("title", "")
                 curl["teks"].update(l.get("teks", []))
-                curl["outcomes"].extend(l.get("learning_outcomes", []))
-                cur["outcomes"].extend(l.get("learning_outcomes", []))  # flat aggregate, display-only
+                # dedup by (page, outcome text): with build_page_batches()'s chunk overlap, the
+                # same page can legitimately be re-extracted by two neighboring batches -- without
+                # this, a shared overlap page would produce two identical LearningComponent nodes.
+                seen_outcome_keys = {(o.get("page"), o.get("outcome")) for o in curl["outcomes"]}
+                new_outcomes = []
+                for o in l.get("learning_outcomes", []):
+                    key = (o.get("page"), o.get("outcome"))
+                    if key not in seen_outcome_keys:
+                        seen_outcome_keys.add(key)
+                        new_outcomes.append(o)
+                curl["outcomes"].extend(new_outcomes)
+                cur["outcomes"].extend(new_outcomes)  # flat aggregate, display-only
                 for m in l.get("materials_needed", []):
                     if m not in curl["materials_needed"]:
                         curl["materials_needed"].append(m)
@@ -390,6 +558,7 @@ def merge(chunks):
             if supp_key not in seen_supp:
                 supplementary.append(sup)
                 seen_supp.add(supp_key)
+    _reconcile_blank_topics(topics)
     return module, topics, standards, assessments, supplementary
 
 
@@ -437,13 +606,17 @@ def load_case(data):
 
 
 # CASE association types -> our edge labels (isChildOf handled specially as hasChild)
+#
+# "isStandardAlignedTo_inferred" (AI-inferred TEKS<->CC crosswalk candidates from
+# infer_missing_crosswalk.py) is deliberately NOT mapped here. Those 151 candidates were
+# generated, loaded as possibleStandardAlignment edges, and then explicitly rejected/deleted by
+# product decision (the user doesn't trust AI-inferred crosswalks) -- omitting the mapping is a
+# structural guardrail so no future build can silently re-materialize that edge type as a graph
+# edge, even if a stale copy of teks_math_case.json (or any other CASE source) ever contains
+# these records again. If genuinely revisited, add the mapping back deliberately, not by default.
 _ASSOC_EDGE = {"isRelatedTo": "relatesTo", "isPeerOf": "relatesTo",
                "precedes": "buildsTowards", "isPrerequisiteFor": "buildsTowards",
                "isStandardAlignedTo": "hasStandardAlignment",   # cross-framework crosswalk
-               # AI-inferred candidate crosswalk (infer_missing_crosswalk.py) for TEKS<->CC pairs
-               # the real Learning Commons crosswalk never covered -- a DIFFERENT edge label than
-               # hasStandardAlignment on purpose, so it's never mistaken for the curated data.
-               "isStandardAlignedTo_inferred": "possibleStandardAlignment",
                "exemplar": "hasReference"}
 
 
@@ -469,7 +642,8 @@ def _fix_backward_range(d):
 
 
 def build_graph(module, topics, standards, assessments, jurisdiction, framework, case=None,
-                scope="", supplementary=(), real_materials=None):
+                scope="", supplementary=(), real_materials=None, real_pages=None,
+                source_pdf_key=None):
     """Build nodes/edges. If `case` (a loaded CASE file) is given, the standards side is the
     real framework — full descriptions, hierarchy (hasChild), and cross-grade links — and
     lessons attach to those real standard nodes by matching codes. Without it, standards are
@@ -482,15 +656,56 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
     `real_materials` (optional, from real_content.find_real_materials()): {topic_number:
     [materials_list, ...]}, one list per lesson in that topic's Pacing Guide order. Overrides
     Claude's per-lesson materials_needed. This exists because materials_needed is unreliable in
-    a way titles/sourceText aren't: a topic's Pacing Guide (the one place "Materials needed:" is
+    a way titles aren't: a topic's Pacing Guide (the one place "Materials needed:" is
     printed) sits on its own early page, while a lesson's own activity content runs many pages
     later — batched extraction sends those to separate, independent Claude calls, so whichever
     batch is extracting the lesson's activities often never sees the Pacing Guide line it's
     supposed to copy, and falls back to guessing from the activity content instead. Titles don't
     have this problem (a lesson's title appears on its own TOC page, in the same batch as its
-    Pacing Guide), so they stay Claude-sourced."""
+    Pacing Guide), so they stay Claude-sourced.
+
+    `real_pages` (optional): {pdf_page (int): text (str)}, this module's real page text from
+    pdfium_page_text() -- NOT docling_page_text() (confirmed live: docling silently drops content
+    on dense/tabular layouts, e.g. one Pacing Guide page returned 290 chars where the real page
+    has 2004, no signal anything was missing -- not tolerable for a field promised verbatim).
+    LearningComponents' `sourceText` is Claude's own regenerated transcription of the page, only
+    ever *instructed* to be verbatim, not guaranteed -- confirmed unreliable (paraphrased,
+    duplicated, or real content silently replaced by a generic label). When a page has exactly one
+    LearningComponent on it, sourceText is overridden with the real page text instead of trusting
+    Claude's copy. Pages shared by 2+ LearningComponents are left on Claude's text -- pdfium_page_
+    text() only returns whole-page text, and there's no reliable way to split one page's text
+    between several activities without guessing which words belong to which.
+
+    `source_pdf_key` (optional, from citation.pdf_key_for_module()): this module's portable PDF
+    citation key, stamped as `sourcePdfKey` on every LearningComponent/Assessment node so a
+    consumer can build a real citation URL (citation.citation_url()) from it plus that node's own
+    pdfPage -- no other lookup needed."""
     nodes, rels = [], []
     real_materials = real_materials or {}
+
+    # Count how many LearningComponents will land on each PDF page, module-wide -- needed below
+    # to decide whether a page's real text can safely override a single node's sourceText, or
+    # whether the page is shared by siblings and must keep Claude's per-node text (pdfium_page_
+    # text() only returns whole-page text, so a shared page has no reliable way to split it).
+    _page_component_count = {}
+    for t in topics.values():
+        for l in t.get("lessons", {}).values():
+            for outcome in l.get("outcomes", []):
+                p = outcome.get("page")
+                if p is not None:
+                    _page_component_count[p] = _page_component_count.get(p, 0) + 1
+    for sup in supplementary:
+        p = sup.get("page")
+        if p is not None:
+            _page_component_count[p] = _page_component_count.get(p, 0) + 1
+
+    def _resolve_source_text(page, claude_text):
+        """Real page text (pdfium_page_text()) when this page has exactly one LearningComponent
+        on it (unambiguous which text belongs to it) and it's covered; otherwise Claude's own
+        text, unchanged -- never overridden with a blank."""
+        if real_pages and page is not None and _page_component_count.get(page) == 1:
+            return real_pages.get(page) or claude_text
+        return claude_text
 
     def nid(kind, key):
         base = f"{scope}|{kind}|{key}" if scope else f"{kind}|{key}"
@@ -620,11 +835,13 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
             for i, outcome in enumerate(l["outcomes"]):
                 lc_id = nid("LearningComponent", f"{module['number']}:{key}:{lkey}:{i}")
                 node(lc_id, "LearningComponent", description=outcome["outcome"],
-                     sourceText=outcome.get("source_text", ""),
+                     sourceText=_resolve_source_text(outcome.get("page"),
+                                                      outcome.get("source_text", "")),
                      componentRole=outcome.get("component_role", ""),
                      isCritical=bool(outcome.get("is_critical", False)),
                      lessonPhase=outcome.get("lesson_phase", ""),
                      pageLabel=outcome.get("page_label", ""), pdfPage=outcome.get("page"),
+                     sourcePdfKey=source_pdf_key or "",
                      academicSubject="Mathematics")
                 rel("hasPart", lesson_id, "Lesson", lc_id, "LearningComponent")
                 for code in sorted(lesson_teks):
@@ -635,10 +852,19 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
         asm_id = nid("Assessment", f"{module['number']}:{topic_no}:{name}")
         node(asm_id, "Assessment", name=name, academicSubject="Mathematics",
              curriculumLabel="Assessment",
-             pageLabel=a.get("page_label", ""), pdfPage=a.get("page"))
+             pageLabel=a.get("page_label", ""), pdfPage=a.get("page"),
+             sourcePdfKey=source_pdf_key or "")
+        # Same fallback as the supplementary loop below: a module-level assessment (e.g. "Module N
+        # Assessment Summary") that Claude's extraction didn't tag with a specific topic_no would
+        # otherwise get its node created but its hasPart edge silently skipped -- a real orphan
+        # bug found live (7 such nodes across Grade 6/7, missing sourcePdfKey/citations because
+        # nothing could resolve their parent module without this edge). Falling back to the
+        # Module itself keeps every Assessment node reachable from the Course->Module hierarchy.
         if topic_no in topics:
-            rel("hasPart", nid("Topic", f"{module['number']}:{topic_no}"),
-                "LessonGrouping", asm_id, "Assessment")
+            parent_id, parent_label = nid("Topic", f"{module['number']}:{topic_no}"), "LessonGrouping"
+        else:
+            parent_id, parent_label = mod_id, "LessonGrouping"
+        rel("hasPart", parent_id, parent_label, asm_id, "Assessment")
         for code in sorted(a["teks"]):
             rel("hasEducationalAlignment", asm_id, "Assessment",
                 resolve(code), "StandardsFrameworkItem", t_key="caseIdentifierUUID",
@@ -654,10 +880,11 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
     for i, sup in enumerate(supplementary):
         supp_id = nid("LearningComponent", f"{module['number']}:supp:{i}")
         node(supp_id, "LearningComponent", description=sup.get("text", ""),
-             sourceText=sup.get("text", ""),
+             sourceText=_resolve_source_text(sup.get("page"), sup.get("text", "")),
              componentRole=_SUPP_ROLE.get(sup.get("type", ""), ""),
              isCritical=False, lessonPhase="",
              pageLabel=sup.get("page_label", ""), pdfPage=sup.get("page"),
+             sourcePdfKey=source_pdf_key or "",
              academicSubject="Mathematics")
         topic_no = sup.get("topic_number", "")
         if topic_no and topic_no in topics:
@@ -683,8 +910,8 @@ def main():
     args = ap.parse_args()
 
     client = anthropic.Anthropic()
-    print("Converting PDF via docling (page-numbered text)...", flush=True)
-    page_text = docling_page_text(args.pdf)
+    print("Converting PDF via pypdfium2 (page-numbered text)...", flush=True)
+    page_text = pdfium_page_text(args.pdf)
     print(f"  {len(page_text)} pages of text extracted", flush=True)
     chunks = []
     for first, last, labeled_text in build_page_batches(page_text, args.pages_per_chunk):

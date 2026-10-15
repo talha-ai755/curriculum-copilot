@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 build_content_index.py — one-time OpenAI embedding + index of curriculum_content from every
-course's *_nodes.jsonl/*_relationships.jsonl pair (currently: Algebra I + Grade 8 Math).
+course's *_nodes.jsonl/*_relationships.jsonl pair currently in data/ (whatever's been ingested).
 
 The v2 extraction pipeline (pdf_to_kg.py, text-first via docling + Claude) already gives every
 LearningComponent/Assessment node real, verbatim text and reliable page numbers directly — no
@@ -20,10 +20,13 @@ import os
 import re
 import sys
 
+from dotenv import load_dotenv
 from openai import OpenAI
 
 import graph_store as gs
 import semantic_index as si
+
+load_dotenv()
 
 if not os.environ.get("OPENAI_API_KEY"):
     sys.exit("OPENAI_API_KEY not set")

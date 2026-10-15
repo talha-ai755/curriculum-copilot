@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
 """
+DEPRECATED -- DO NOT RERUN WITHOUT EXPLICIT USER REQUEST. The 151 candidate associations this
+script previously generated were loaded as possibleStandardAlignment edges, then explicitly
+rejected and removed by product decision (the user doesn't trust AI-inferred crosswalks) --
+deleted from Neo4j, from every course's *_relationships.jsonl, and from teks_math_case.json's
+CFAssociations directly. pdf_to_kg.py's _ASSOC_EDGE mapping no longer converts
+"isStandardAlignedTo_inferred" into a graph edge at all, so even if this script were rerun, its
+output would be inert on the next graph build -- but rerunning it would still re-pollute
+teks_math_case.json with rejected data, so don't. Left in place for its documented method
+(grade-band-constrained candidate pool), not as a script to actually execute.
+
 infer_missing_crosswalk.py — propose candidate TEKS<->Common Core crosswalk edges for TEKS
 standards the real Learning Commons crosswalk never covered (confirmed: only 258 of 1,515 TEKS
 standards have a real hasStandardAlignment edge; web search confirmed no better authoritative

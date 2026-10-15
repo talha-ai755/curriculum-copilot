@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
 test_question_set.py — run every question from Test_Question_Set.docx through the real
-answer_with_tools() loop (same logic app.py uses), against the live combined graph
-(Algebra I + Grade 8 Math). Logs each question, the final answer, and the full tool-call
-transcript to stdout so results can be reviewed and spot-checked against the real PDFs.
+answer_with_tools() loop (same logic app.py uses), against the live combined graph of every
+course currently in data/ (the QUESTIONS list below was originally written against Algebra I +
+Grade 8 Math, so most questions target those two, but the graph loaded is whatever's actually
+ingested). Logs each question, the final answer, and the full tool-call transcript to stdout so
+results can be reviewed and spot-checked against the real PDFs.
 
 Usage: python3 test_question_set.py
 """
 import json
+import os
 import sys
 
 import anthropic
@@ -58,14 +61,14 @@ QUESTIONS = [
 
 
 def main():
-    print("Loading combined graph (Algebra I + Grade 8 Math)...", file=sys.stderr)
+    print("Loading combined graph (every course currently in data/)...", file=sys.stderr)
     nodes, rels = agent.load_all_courses()
     driver = gs.get_driver(gs.DEFAULT_URI, gs.DEFAULT_USER, gs.DEFAULT_PASSWORD)
     schema_doc = gs.schema_description(nodes, rels)
     qc = si.get_client()
     openai_client = OpenAI()
     client = anthropic.Anthropic()
-    system = agent.AGENT_SYSTEM_TEMPLATE.format(schema=schema_doc)
+    system = agent.build_system_prompt(schema_doc, os.environ.get("PDF_BASE_URL"))
     print(f"Loaded: {len(nodes)} nodes, {len(rels)} rels. Running {len(QUESTIONS)} questions...\n",
           file=sys.stderr)
 

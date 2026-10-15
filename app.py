@@ -3,10 +3,11 @@
 Streamlit chat UI for the curriculum copilot.
 
 Auto-loads every persisted course's knowledge graph (Course->Module->Topic->Lesson->
-LearningComponent/Assessment, LC schema; currently Algebra I + Grade 8 Math, sharing one
-standards backbone) into Neo4j + Qdrant (both on-disk, so this survives restarts) and lets a
-teacher chat with it. The model decides itself whether to query the graph, search semantically,
-or both — see agent.py for the tool-use loop (AGENT_SYSTEM_TEMPLATE / TOOLS / answer_with_tools).
+LearningComponent/Assessment, LC schema; whatever course JSONL pairs currently exist in data/,
+sharing one standards backbone) into Neo4j + Qdrant (both on-disk, so this survives restarts) and
+lets a teacher chat with it. The model decides itself whether to query the graph, search
+semantically, or both — see agent.py for the tool-use loop (AGENT_SYSTEM_TEMPLATE / TOOLS /
+answer_with_tools).
 
 Needs a Claude API key (sidebar, or set ANTHROPIC_API_KEY) and a reachable Neo4j
 (docker compose up -d in this directory starts one with the right credentials by default).
@@ -18,7 +19,7 @@ import streamlit as st
 
 import graph_store as gs
 import semantic_index as si
-from agent import AGENT_SYSTEM_TEMPLATE, answer_with_tools, load_all_courses
+from agent import answer_with_tools, build_system_prompt, load_all_courses
 
 load_dotenv()  # reads .env into os.environ if present -- so NEO4J_URI/QDRANT_HOST/etc take
                 # effect from `streamlit run app.py` alone, no manual `source .env` needed
@@ -53,6 +54,10 @@ def load_course():
         print(f"[stack] Qdrant: local (default) -- {si.DEFAULT_PATH}", flush=True)
 
     nodes, rels = load_all_courses()
+    # Derived from whatever's actually loaded, never hardcoded -- a stale "Algebra I + Grade 8
+    # Math" caption/placeholder survived multiple grades' worth of K-5 course additions this
+    # session before anyone noticed, because nothing forced it to track the real course list.
+    course_names = sorted(n["properties"]["name"] for n in nodes if n["labels"][0] == "Course")
     driver, schema_doc = None, None
     try:
         driver = gs.get_driver(neo4j_uri,
@@ -64,26 +69,27 @@ def load_course():
     except Exception as e:
         print(f"[stack] Neo4j connection FAILED: {e}", flush=True)
         driver = None
-    qc = si.get_client()
+    qc = si.get_shared_client()
     print(f"[stack] Qdrant client mode: {type(qc._client).__name__}", flush=True)
     openai_client = None
     if os.environ.get("OPENAI_API_KEY"):
         from openai import OpenAI
         openai_client = OpenAI()
-    return driver, schema_doc, qc, openai_client
+    return driver, schema_doc, qc, openai_client, course_names
 
 
 # ── Page ────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Curriculum Copilot", page_icon="🧭", layout="wide")
 st.title("🧭 Curriculum Copilot")
-st.caption("Ask questions grounded in the real Bluebonnet curriculum (Algebra I + Grade 8 Math, "
-           "standards-aligned) — the model cites the specific Topic/Lesson, standard, and page.")
 
 with st.sidebar:
     api_key = st.text_input("Claude API key", type="password", value=_default_api_key(),
                             help="Or set ANTHROPIC_API_KEY as an env var / Streamlit secret.")
 
-driver, schema_doc, qdrant_client, openai_client = load_course()
+driver, schema_doc, qdrant_client, openai_client, course_names = load_course()
+st.caption(f"Ask questions grounded in the real Bluebonnet curriculum "
+           f"({', '.join(course_names) or 'no courses loaded'}, standards-aligned) — the model "
+           f"cites the specific Topic/Lesson, standard, and page.")
 if driver is None:
     st.warning("Neo4j unavailable — chat will rely on semantic search only. "
                "(`docker compose up -d` in this directory to start it.)")
@@ -102,7 +108,7 @@ examples = [
 ]
 picked = st.pills("Try an example:", examples, selection_mode="single") \
     if hasattr(st, "pills") else None
-q = st.chat_input("Ask about Algebra I or Grade 8 Math…")
+q = st.chat_input("Ask about any Bluebonnet course…")
 question = q or picked
 
 
@@ -171,9 +177,7 @@ if question:
             st.warning("Enter a Claude API key in the sidebar to ask questions.")
     else:
         import anthropic
-        system = AGENT_SYSTEM_TEMPLATE.format(
-            schema=schema_doc or "(Neo4j not loaded — graph_query will error; rely on "
-                                  "semantic_search instead.)")
+        system = build_system_prompt(schema_doc, os.environ.get("PDF_BASE_URL"))
         with st.chat_message("assistant"):
             with st.spinner("Thinking…"):
                 try:

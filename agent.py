@@ -340,6 +340,12 @@ def answer_with_tools(client, system, question, driver, qdrant_client, openai_cl
     transcript is a list of {"tool", "input", "result"} for display."""
     messages = [{"role": "user", "content": question}]
     transcript = []
+    # Text from EVERY turn, not just the last: the model can write its answer next to a final
+    # tool call (e.g. one more graph_query just to fetch a citation page) and then end with only
+    # a "Source: ..." line. Returning only the last turn's first text block dropped the real
+    # answer (graph_bench: "Multiply a decimal by single-digit whole numbers..." answered with a
+    # bare source link after its first query had already returned 5.3A/5.3E/5.3K).
+    texts = []
     for _ in range(max_turns):
         # max_tokens=8192, not the earlier 1500: confirmed live that a citation-heavy answer (one
         # Markdown link per row across a large table, per the CITATION LINKS instructions above)
@@ -350,8 +356,9 @@ def answer_with_tools(client, system, question, driver, qdrant_client, openai_cl
         resp = client.messages.create(model=p2k.MODEL, max_tokens=8192, system=system,
                                        tools=TOOLS, messages=messages)
         messages.append({"role": "assistant", "content": resp.content})
+        texts += [b.text.strip() for b in resp.content if b.type == "text" and b.text.strip()]
         if resp.stop_reason != "tool_use":
-            return next((b.text for b in resp.content if b.type == "text"), ""), transcript
+            return "\n\n".join(texts), transcript
         tool_results = []
         for block in resp.content:
             if block.type != "tool_use":
@@ -361,4 +368,4 @@ def answer_with_tools(client, system, question, driver, qdrant_client, openai_cl
             tool_results.append({"type": "tool_result", "tool_use_id": block.id,
                                   "content": json.dumps(result, default=str)})
         messages.append({"role": "user", "content": tool_results})
-    return "⚠️ Reached the tool-call limit without a final answer.", transcript
+    return "\n\n".join(texts + ["⚠️ Reached the tool-call limit without a final answer."]), transcript

@@ -78,22 +78,47 @@ across up to 8 untagged pages (facsimile student pages have no header) as long a
 lesson's page lies in between. Lessons the headers don't cover keep their existing range if it
 holds all their content, and only then fall back to the LearningComponent rollup.
 
-## 3. Load the stores
+## 3. Publish to the stores — `publish.py`
 
-| Store | Command | Notes |
+Every curriculum lives in Neo4j and Qdrant under its own **scope**: `base:<id>@v<n>` for a base
+curriculum version, `view:<id>` for a user's own curriculum, `framework:<id>` for the shared
+standards.
+
+| What | How | Notes |
 |---|---|---|
-| Neo4j | `app.py` on start-up (`graph_store.load_graph`, MERGE only) | Never deletes. Long text (`sourceText`, `description`) is kept out of Neo4j |
-| Neo4j, exact mirror | `NEO4J_URI=bolt://localhost:7687 python3 reload_neo4j.py [--apply]` | Also deletes nodes/edges no longer in `data/`. Refuses any non-local `NEO4J_URI` |
-| Qdrant | `python3 build_content_index.py` | Re-embeds every LearningComponent/Assessment with OpenAI; costs money per run |
+| Base version | Library → **Publish to chat** (`publish.publish_base`) | Replaces the curriculum's previous version in both stores. Search vectors are reused for unchanged text (`semantic_index.index_scope`), so only new text is embedded |
+| User's curriculum | My Curriculum → **Save & publish**, or automatically on first chat use (`publish.publish_view`) | `views.materialize` replays the user's edit log into a self-contained graph (view-scoped ids, citations still pointing at each source book); usually 0 embedding calls |
+| App start-up | `ui_common.prepare_library` | Loads every base into Neo4j (MERGE); one-time scope tagging of an index built before scopes existed (backup at `data/qdrant_storage.before-scopes`) |
+| Neo4j, exact local mirror | `NEO4J_URI=bolt://localhost:7687 python3 reload_neo4j.py [--apply]` | Also deletes nodes/edges no longer in the registry's graphs. Refuses any non-local `NEO4J_URI` |
 
 ## 4. Serve — `app.py` → `agent.py`
 
+- The chat works on one curriculum at a time: `agent.build_system_prompt(..., curriculum=)`
+  names it, every `graph_query` gets a `$scope` parameter the model must filter curriculum nodes
+  by, and `semantic_search` is filtered to that scope in code.
 - `agent.answer_with_tools()` runs a bounded Claude tool loop (max 10 turns) with three tools:
   `graph_query` (read-only Cypher, guarded by `graph_store.is_read_only`), `semantic_search`
   (Qdrant), and `get_content` (fetch text by identifier).
 - Citations are built from `sourcePdfKey` + `pdfPage` and `PDF_BASE_URL` (`citation.py`;
   `build_pdf_mirror.py` serves the PDFs locally).
-- `pages/Page_Inspector.py` shows a PDF page next to its live Neo4j and Qdrant data, for QA.
+- `pages/3_Page_Inspector.py` (admins) shows a PDF page next to its live Neo4j and Qdrant data.
+
+## Users' own curricula — `views.py`
+
+A view pins base curricula of one subject at specific versions and stores an ordered edit log
+(fork, include module/topic/lesson, own module/topic, remove, move, edit field or content text,
+add/remove standards) with undo/redo. Edits that no longer apply (e.g. after upgrading a pinned
+base) are listed as conflicts and skipped, never guessed. `views.coverage` compares the standards
+the view teaches with those its source curricula teach (gaps / overlaps).
+
+## Subjects and publishers — `profiles.py`, `frameworks.py`
+
+`profiles/subjects/<id>.yaml`: academic subject, default framework, extraction prompt, lesson
+phases and supplementary-content types (the schema's enums), Pacing-Guide materials parsing.
+Math reproduces the original prompt exactly; other subjects use
+`profiles/prompts/generic_teacher_edition.txt`. `profiles/publishers/<id>.yaml`: page-header
+format (`bluebonnet` → lesson-aligned batches and header page ranges; `none` → fixed 25-page
+batches). `frameworks/<id>/`: `meta.yaml` + a CASE file (`teks_math`, `teks_ela`).
 
 ## Maintenance on already-built courses
 

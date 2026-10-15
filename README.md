@@ -25,69 +25,50 @@ CASE (framework)┘         (the "eyes")                              (plain cod
 
 ## Run locally
 
-Chat is backed by Neo4j (the graph) + Qdrant (semantic search over lesson content) — start
-Neo4j first:
-
-```bash
-docker run -d --name neo4j -p 7474:7474 -p 7687:7687 \
-    -e NEO4J_AUTH=neo4j/changeme-local-pw neo4j:5
-# or: docker compose up -d
-```
-
-Then:
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-Open http://localhost:8501.
-
-- **Demo mode** (default ON) builds a graph from bundled Module 2 data with **no API key** —
-  good for a first look.
-- For a real PDF: switch **Input** to "Upload PDF" in the sidebar, paste a **Claude API key**,
-  upload a curriculum **PDF**, and (optionally) tick **"use bundled TEKS Mathematics framework"**.
-- To skip extraction and load an already-built graph directly, switch **Input** to "Load
-  existing graph (JSONL)" and point it at a `nodes.jsonl`/`relationships.jsonl` pair.
-- Every "Build graph" click loads the result into Neo4j (`MERGE`d by `identifier`, so rebuilding
-  never duplicates) and indexes lesson/activity content into an in-memory Qdrant collection.
-- Open the **💬 Chat** tab to test teacher questions — Claude gets both a `graph_query` (Cypher
-  against Neo4j) and a `semantic_search` (Qdrant) tool and decides itself which to call; the
-  "🔎 How this was answered" expander under each answer shows what it actually did.
-
-## Deploy to Streamlit Community Cloud
-
-1. Push this repo to GitHub.
-2. On [share.streamlit.io](https://share.streamlit.io) → **New app** → pick this repo,
-   main file `app.py`.
-3. (Optional) In the app's **Settings → Secrets**, add your key so users don't have to paste it:
-   ```toml
-   ANTHROPIC_API_KEY = "sk-ant-..."
+1. **Neo4j (local).** The app *loads* curricula into the Neo4j that `NEO4J_URI` points at, on
+   start-up and whenever something is published — keep it on the local one:
+   ```bash
+   docker compose up -d          # Neo4j on bolt://localhost:7687, password changeme-local-pw
    ```
-4. Deploy. The bundled `teks_math_case.json` ships with the app, so the framework works
-   out of the box.
+2. **`.env`** (copy `.env.example`): `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` (search embeddings),
+   `NEO4J_URI=bolt://localhost:7687` (+ user/password), `ADMIN_USERS=<your name>,...`.
+3. **Install and run:**
+   ```bash
+   pip install -r requirements.txt
+   python3 import_existing.py    # only on a fresh checkout / empty data/app.db: registers the
+                                 # existing courses from registry_seed.json
+   streamlit run app.py          # http://localhost:8501
+   ```
+   The first start prepares the library: the local search index gets each point's curriculum
+   scope (a copy is kept at `data/qdrant_storage.before-scopes`, no re-embedding) and every base
+   curriculum is loaded into Neo4j.
 
-## Files
+### Using the app
 
-| File | Purpose |
-|---|---|
-| `app.py` | Streamlit UI — upload/load, build, **Chat** (agent tool-use loop), download |
-| `pdf_to_kg.py` | LLM PDF → graph extractor (`load_case`, `build_graph`, `extract_chunk`); now also captures page-level metadata (`page_label`, `pdf_page`, `lesson_phase`, `materials_needed`) |
-| `graph_store.py` | Neo4j load (`MERGE`-by-`identifier`, idempotent) + read-only Cypher execution |
-| `semantic_index.py` | Qdrant (in-memory, FastEmbed) indexing + semantic search over lesson/activity content |
-| `build_kg.py` | Hand-authored graph-builder reference (no LLM) |
-| `case_from_graph.py` | Utility: extract a TEKS CASE file from an existing Learning Commons graph (needs the big `nodes.jsonl`/`relationships.jsonl`, which are **not** in this repo) |
-| `teks_math_case.json` | Bundled Texas math TEKS framework (1,247 standards) |
+Sign in with your name (sidebar). Everything else happens in three pages:
+
+| Page | Who | What |
+|---|---|---|
+| **Chat** (`app.py`) | everyone | Pick a curriculum — one of yours or a base — and ask; answers come only from that curriculum and cite the book's pages. "🔎 How this was answered" shows the tool calls. |
+| **My Curriculum** | everyone | Your own curricula, visible only to you: copy a base or start empty, add modules / topics / lessons from any base of the same subject, add your own modules/topics, rename / move / reorder / remove, edit lesson details and activity text, add or remove standards, undo/redo, standards coverage (gaps / overlaps), upgrade to a newer base version, **Save & publish** (makes the chat use your latest version). |
+| **Library** | admins (`ADMIN_USERS`) | Base curricula: add one from its module PDFs (subject, standards framework, publisher layout), submit extraction (Claude Batch API), build (background), **Publish to chat**; update modules with new PDFs — "Analyze changes" shows pages/lessons changed and the number of extraction calls before anything is paid for. |
+| **Page Inspector** | admins | QA: a PDF page next to what Neo4j and the search index hold for it. |
+
+New subjects need no code: a subject profile (`profiles/subjects/<id>.yaml`), a standards
+framework (`frameworks/<id>/`), and for unknown publishers the generic layout profile. How the
+pipeline works step by step is in [flow.md](flow.md).
 
 ## Standards / model
 
 - Default model: `claude-opus-4-8` (change `MODEL` in `pdf_to_kg.py`).
+- Prerequisites come from the curriculum's standards framework (math: TEKS → Common Core
+  crosswalk → `buildsTowards`).
 - The Chat answers are **grounded** through tool calls, not a stuffed-context prompt: Claude
   writes its own Cypher against Neo4j and/or searches Qdrant semantically, and is told to say
   so plainly (rather than invent content) when both tools come up empty.
 
 ## Attribution
 
-The bundled TEKS framework (`teks_math_case.json`) is derived from a Learning Commons
+The bundled TEKS frameworks (`frameworks/teks_math`, `frameworks/teks_ela`) is derived from a Learning Commons
 knowledge graph provided under **CC BY-4.0**; TEKS standards courtesy of the Texas Education
 Agency via 1EdTech CASE. Curriculum PDFs are **not** included (copyright).

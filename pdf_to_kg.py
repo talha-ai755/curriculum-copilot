@@ -310,9 +310,24 @@ def build_lesson_batches(page_text, lesson_of, max_pages=30, overlap=3):
     if not lesson_of:
         yield from build_page_batches(page_text, batch_size=25, overlap=overlap)
         return
+    import lesson_pages
     pages = sorted(page_text)
-    batches, batch = [], []
+    # pages inside a lesson's header range -- not every tagged page: front matter can carry
+    # stray "Lesson N:" lines (a table of contents) outside any lesson's range
+    tagged = {p for lo, hi in lesson_pages.lesson_ranges(lesson_of).values()
+              for p in range(lo, hi + 1)}
+    units = []
     for unit in lesson_units(pages, lesson_of):
+        # A lesson plus its intro pages over the limit: give the intro (e.g. a module's ~20 pages
+        # of front matter before Lesson 1) its own unit rather than splitting the lesson itself --
+        # the lesson's batch still sees the last `overlap` intro pages as leading context.
+        k = next((i for i, p in enumerate(unit) if p in tagged), 0)
+        if len(unit) > max_pages and k and len(unit) - k <= max_pages:
+            units += [unit[:k], unit[k:]]
+        else:
+            units.append(unit)
+    batches, batch = [], []
+    for unit in units:
         if len(unit) > max_pages:
             if batch:
                 batches.append(batch)

@@ -268,6 +268,71 @@ def build_page_batches(page_text, batch_size=25, overlap=3):
         yield core[0], core[-1], labeled_text
 
 
+def lesson_units(pages, lesson_of):
+    """Split the sorted page list into contiguous units, one per lesson, using the running-header
+    ranges from lesson_pages.lesson_ranges(lesson_of). Untagged pages BETWEEN lessons (topic
+    openers, lesson intros, pacing guides) join the NEXT lesson's unit, so a topic's heading always
+    travels with its first lesson; untagged pages after the last lesson (assessments, answer keys)
+    form a trailing unit."""
+    import lesson_pages
+    owner = {}
+    for key, (lo, hi) in sorted(lesson_pages.lesson_ranges(lesson_of).items(), key=lambda kv: kv[1]):
+        for p in range(lo, hi + 1):
+            owner.setdefault(p, key)
+    units, current, current_key, pending = [], [], None, []
+    for p in pages:
+        key = owner.get(p)
+        if key is None:
+            pending.append(p)
+        elif key == current_key:
+            current += pending + [p]
+            pending = []
+        else:
+            if current:
+                units.append(current)
+            current, current_key, pending = pending + [p], key, []
+    if current:
+        units.append(current)
+    if pending:
+        units.append(pending)
+    return units
+
+
+def build_lesson_batches(page_text, lesson_of, max_pages=30, overlap=3):
+    """Like build_page_batches(), but batch edges fall on LESSON boundaries instead of every
+    `batch_size` pages: whole lessons (see lesson_units()) are packed into batches of at most
+    `max_pages`, and only a lesson longer than that on its own is split. Fixed 25-page windows
+    split 572 of 1,068 lessons across batches (measured on every course's PDFs) -- the root of the
+    blank-title topics, misattributed lesson ranges and truncated page ranges that
+    _reconcile_blank_topics() and the repair scripts exist to clean up. Same yield shape and
+    `overlap` leading-context semantics as build_page_batches(); falls back to it when the PDF has
+    no recognizable lesson headers (`lesson_of` empty)."""
+    if not lesson_of:
+        yield from build_page_batches(page_text, batch_size=25, overlap=overlap)
+        return
+    pages = sorted(page_text)
+    batches, batch = [], []
+    for unit in lesson_units(pages, lesson_of):
+        if len(unit) > max_pages:
+            if batch:
+                batches.append(batch)
+                batch = []
+            batches += [unit[i:i + max_pages] for i in range(0, len(unit), max_pages)]
+        elif len(batch) + len(unit) > max_pages:
+            batches.append(batch)
+            batch = list(unit)
+        else:
+            batch += unit
+    if batch:
+        batches.append(batch)
+    index = {p: i for i, p in enumerate(pages)}
+    for core in batches:
+        start = index[core[0]]
+        window = pages[max(0, start - overlap):start] + core
+        labeled_text = "\n\n".join(f"=== PDF PAGE {p} ===\n{page_text[p]}" for p in window)
+        yield core[0], core[-1], labeled_text
+
+
 def text_message_params(labeled_text, page_range_label):
     """The Messages-API params for one extraction batch — shared by streaming and Batch."""
     return dict(
@@ -900,7 +965,8 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("pdf")
-    ap.add_argument("--pages-per-chunk", type=int, default=25)
+    ap.add_argument("--pages-per-chunk", type=int, default=30,
+                    help="Max pages per extraction call; calls end on lesson boundaries")
     ap.add_argument("--jurisdiction", default="Texas")
     ap.add_argument("--framework", default="TEKS")
     ap.add_argument("--case", help="path to a 1EdTech CASE framework JSON (optional)")
@@ -914,7 +980,10 @@ def main():
     page_text = pdfium_page_text(args.pdf)
     print(f"  {len(page_text)} pages of text extracted", flush=True)
     chunks = []
-    for first, last, labeled_text in build_page_batches(page_text, args.pages_per_chunk):
+    import lesson_pages
+    _labels, lesson_of = lesson_pages.scan_pdf(args.pdf)
+    for first, last, labeled_text in build_lesson_batches(page_text, lesson_of,
+                                                          max_pages=args.pages_per_chunk):
         label = f"pages {first}-{last}"
         print(f"  extracting {label} ...", flush=True)
         try:

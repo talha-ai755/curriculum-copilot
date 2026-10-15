@@ -59,6 +59,7 @@ import anthropic
 from dotenv import load_dotenv
 
 import citation
+import lesson_pages
 import pdf_to_kg as p2k
 import real_content as rc
 
@@ -147,7 +148,12 @@ def submit_course_batch(cache_tag, modules, state_path, custom_id_prefix=""):
         print(f"Converting {module_name} via pypdfium2...", file=sys.stderr)
         page_text = cached_page_text(module_name, pdf_path, cache_tag)
         print(f"  {module_name}: {len(page_text)} pages", file=sys.stderr)
-        for first, last, labeled_text in p2k.build_page_batches(page_text, batch_size=25):
+        # Batch edges on lesson boundaries (running headers), not every 25 pages -- see
+        # pdf_to_kg.build_lesson_batches(). max_pages=30 keeps batches no bigger on average than
+        # the old 25-page windows (22.5 vs 24.1 pages), so output-token headroom is unchanged.
+        _labels, lesson_of = lesson_pages.scan_pdf(pdf_path)
+        for first, last, labeled_text in p2k.build_lesson_batches(page_text, lesson_of,
+                                                                  max_pages=30):
             custom_id = f"{custom_id_prefix}{module_name.replace(' ', '')}_{first}_{last}"
             requests.append({
                 "custom_id": custom_id,

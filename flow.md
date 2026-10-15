@@ -22,7 +22,11 @@ The README covers setup; this file covers the order things run in and why.
 - `batch_pipeline.submit_course_batch()`:
   - reads each PDF's text per page with pypdfium2 (`pdf_to_kg.pdfium_page_text`, cached in
     `/tmp/page_text_cache`);
-  - cuts it into 25-page batches with a 3-page overlap, each page labelled `=== PDF PAGE N ===`;
+  - cuts it into batches that end on lesson boundaries (`pdf_to_kg.build_lesson_batches`, at most
+    30 pages, lessons found from the running headers by `lesson_pages.py`; intro pages travel with
+    the lesson after them), with a 3-page overlap, each page labelled `=== PDF PAGE N ===`. Fixed
+    25-page windows split 572 of 1,068 lessons; this splits 124, 63 of them longer than 30 pages
+    on their own. PDFs without recognizable headers fall back to fixed 25-page windows;
   - sends one Batch API request per batch with the structured-output schema
     (`pdf_to_kg.EXTRACTION_SCHEMA`);
   - saves the batch id and the `custom_id` map to `data/batch_state/` — keep these files: they

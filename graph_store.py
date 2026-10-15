@@ -39,6 +39,11 @@ def _graph_properties(label, properties):
 # before it's even sent, so the model gets a fast, clear error to react to.
 _WRITE_KEYWORDS = ("CREATE", "MERGE", "DELETE", "DETACH", "SET", "REMOVE", "DROP")
 _WRITE_RE = re.compile(r"\b(" + "|".join(_WRITE_KEYWORDS) + r")\b", re.IGNORECASE)
+# String literals, backtick identifiers and comments are blanked out before the keyword check --
+# otherwise an ordinary read like `WHERE l.name CONTAINS 'Data Set'` or `CONTAINS 'create a
+# table'` was refused as a write (confirmed: both were rejected before this).
+_NON_CODE_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`[^`]*`|//[^\n]*|/\*.*?\*/",
+                          re.DOTALL)
 
 
 def get_driver(uri=None, user=None, password=None):
@@ -118,7 +123,7 @@ def schema_description(nodes, rels):
 
 
 def is_read_only(cypher):
-    return not _WRITE_RE.search(cypher)
+    return not _WRITE_RE.search(_NON_CODE_RE.sub("''", cypher))
 
 
 def run_cypher(driver, cypher, params=None):

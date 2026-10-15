@@ -39,6 +39,11 @@ load_dotenv()
 
 st.set_page_config(page_title="Page Inspector", page_icon="🔍", layout="wide")
 st.title("🔍 Page Inspector")
+import ui_common as ui  # noqa: E402
+_user, _is_admin = ui.sign_in()
+if not _is_admin:
+    st.warning("Page Inspector is an admin QA tool.")
+    st.stop()
 st.caption("Pick a PDF page and compare it against the graph nodes and Qdrant entries built from "
            "it — a QA view, not a teacher-facing one.")
 

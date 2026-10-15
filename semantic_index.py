@@ -32,7 +32,8 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
 
 COLLECTION = "curriculum_content"
-DEFAULT_PATH = os.path.join(os.path.dirname(__file__), "data", "qdrant_storage")
+DEFAULT_PATH = os.environ.get("QDRANT_PATH",
+                              os.path.join(os.path.dirname(__file__), "data", "qdrant_storage"))
 
 OPENAI_EMBED_MODEL = "text-embedding-3-small"
 OPENAI_EMBED_DIM = 1536

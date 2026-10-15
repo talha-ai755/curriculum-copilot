@@ -88,7 +88,8 @@ def create_view(conn, user, name, subject, pins, fork_from=None):
         if not c or c["subject"] != subject:
             raise ValueError(f"{cid} is not a {subject} curriculum")
     view_id = uuid.uuid4().hex[:12]
-    conn.execute("INSERT INTO views VALUES (?,?,?,?,?,?,?)",
+    conn.execute("INSERT INTO views (id, user, name, subject, pins_json, created_at, updated_at) "
+                 "VALUES (?,?,?,?,?,?,?)",
                  (view_id, user, name, subject, json.dumps(pins), registry.now(), registry.now()))
     if fork_from:
         add_op(conn, view_id, "fork", {"curriculum_id": fork_from})
@@ -160,6 +161,14 @@ def redo(conn, view_id):
     if row["s"]:
         conn.execute("UPDATE view_ops SET undone=0 WHERE view_id=? AND seq=?", (view_id, row["s"]))
     return row["s"]
+
+
+def mark_published(conn, view_id):
+    conn.execute("UPDATE views SET published_at=? WHERE id=?", (registry.now(), view_id))
+
+
+def has_unpublished_changes(view):
+    return not view.get("published_at") or view["updated_at"] > view["published_at"]
 
 
 def new_group_key():

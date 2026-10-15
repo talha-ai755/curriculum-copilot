@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS view_ops (
 
 
 def now():
-    return datetime.datetime.now().isoformat(timespec="seconds")
+    return datetime.datetime.now().isoformat(timespec="microseconds")
 
 
 def slugify(text):
@@ -109,6 +109,16 @@ def sha256_file(path):
     return h.hexdigest()
 
 
+def _migrate(conn):
+    """Columns added after a database was first created."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(versions)")}
+    if "published_at" not in cols:      # when this version was loaded into Neo4j + Qdrant
+        conn.execute("ALTER TABLE versions ADD COLUMN published_at TEXT DEFAULT ''")
+    vcols = {r["name"] for r in conn.execute("PRAGMA table_info(views)")}
+    if "published_at" not in vcols:     # last time the view was published (vs. updated_at)
+        conn.execute("ALTER TABLE views ADD COLUMN published_at TEXT DEFAULT ''")
+
+
 @contextlib.contextmanager
 def connect(db_path=None):
     db_path = db_path or DB_PATH
@@ -118,6 +128,7 @@ def connect(db_path=None):
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         yield conn
         conn.commit()
     finally:
@@ -178,6 +189,13 @@ def get_version(conn, curriculum_id, version):
 def versions(conn, curriculum_id):
     return [dict(r) for r in conn.execute(
         "SELECT * FROM versions WHERE curriculum_id=? ORDER BY version", (curriculum_id,))]
+
+
+def latest_published(conn, curriculum_id):
+    """The version the chat answers from (loaded into Neo4j + Qdrant), or None."""
+    row = conn.execute("SELECT * FROM versions WHERE curriculum_id=? AND status='ready' AND "
+                       "published_at != '' ORDER BY version DESC LIMIT 1", (curriculum_id,)).fetchone()
+    return dict(row) if row else None
 
 
 def latest_ready(conn, curriculum_id):

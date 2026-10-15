@@ -1,28 +1,22 @@
 #!/usr/bin/env python3
 """
-Streamlit chat UI for the curriculum copilot.
+Curriculum Copilot -- Streamlit app, chat page.
 
-Auto-loads every persisted course's knowledge graph (Course->Module->Topic->Lesson->
-LearningComponent/Assessment, LC schema; whatever course JSONL pairs currently exist in data/,
-sharing one standards backbone) into Neo4j + Qdrant (both on-disk, so this survives restarts) and
-lets a teacher chat with it. The model decides itself whether to query the graph, search
-semantically, or both — see agent.py for the tool-use loop (AGENT_SYSTEM_TEMPLATE / TOOLS /
-answer_with_tools).
+Sign in with your name (sidebar), pick a curriculum -- one of your own (built on the
+"My Curriculum" page) or a base curriculum -- and ask questions; answers come only from that
+curriculum (its scope in Neo4j + Qdrant) and cite the source book's pages. Admins manage base
+curricula on the "Library" page. See agent.py for the tool-use loop.
 
-Needs a Claude API key (sidebar, or set ANTHROPIC_API_KEY) and a reachable Neo4j
-(docker compose up -d in this directory starts one with the right credentials by default).
+Needs ANTHROPIC_API_KEY (or the sidebar box), OPENAI_API_KEY for semantic search, and a
+reachable Neo4j (`docker compose up -d` in this directory starts a local one).
 """
 import os
 
-from dotenv import load_dotenv
 import streamlit as st
 
-import graph_store as gs
 import semantic_index as si
-from agent import answer_with_tools, build_system_prompt, load_all_courses
-
-load_dotenv()  # reads .env into os.environ if present -- so NEO4J_URI/QDRANT_HOST/etc take
-                # effect from `streamlit run app.py` alone, no manual `source .env` needed
+import ui_common as ui
+from agent import answer_with_tools, build_system_prompt
 
 
 def _default_api_key():
@@ -35,80 +29,50 @@ def _default_api_key():
     return os.environ.get("ANTHROPIC_API_KEY", "")
 
 
-@st.cache_resource(show_spinner="Loading all courses into Neo4j + Qdrant…")
-def load_course():
-    """Cached at the process level — runs once per server lifetime, every browser session
-    after the first gets it for free. Neo4j graph load is cheap and stays idempotent (MERGE) so
-    it's fine to redo every launch. The Qdrant curriculum_content collection is built ONCE by
-    build_content_index.py — OpenAI embeddings cost money per call, so this just opens the
-    already-built on-disk collection rather than re-embedding on every app start."""
-    neo4j_uri = os.environ.get("NEO4J_URI", gs.DEFAULT_URI)
-    neo4j_mode = "REMOTE" if os.environ.get("NEO4J_URI") else "local (default)"
-    print(f"[stack] Neo4j: {neo4j_mode} -- {neo4j_uri}", flush=True)
-
-    qdrant_host = os.environ.get("QDRANT_HOST")
-    if qdrant_host:
-        qdrant_port = os.environ.get("QDRANT_PORT", 6333)
-        print(f"[stack] Qdrant: REMOTE -- {qdrant_host}:{qdrant_port}", flush=True)
-    else:
-        print(f"[stack] Qdrant: local (default) -- {si.DEFAULT_PATH}", flush=True)
-
-    nodes, rels = load_all_courses()
-    # Derived from whatever's actually loaded, never hardcoded -- a stale "Algebra I + Grade 8
-    # Math" caption/placeholder survived multiple grades' worth of K-5 course additions this
-    # session before anyone noticed, because nothing forced it to track the real course list.
-    course_names = sorted(n["properties"]["name"] for n in nodes if n["labels"][0] == "Course")
-    driver, schema_doc = None, None
-    try:
-        driver = gs.get_driver(neo4j_uri,
-                                os.environ.get("NEO4J_USER", gs.DEFAULT_USER),
-                                os.environ.get("NEO4J_PASSWORD", gs.DEFAULT_PASSWORD))
-        gs.load_graph(driver, nodes, rels)
-        schema_doc = gs.schema_description(nodes, rels)
-        print(f"[stack] Neo4j connected OK -- {len(nodes)} nodes / {len(rels)} rels loaded", flush=True)
-    except Exception as e:
-        print(f"[stack] Neo4j connection FAILED: {e}", flush=True)
-        driver = None
-    qc = si.get_shared_client()
-    print(f"[stack] Qdrant client mode: {type(qc._client).__name__}", flush=True)
-    openai_client = None
-    if os.environ.get("OPENAI_API_KEY"):
-        from openai import OpenAI
-        openai_client = OpenAI()
-    return driver, schema_doc, qc, openai_client, course_names
-
-
 # ── Page ────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Curriculum Copilot", page_icon="🧭", layout="wide")
 st.title("🧭 Curriculum Copilot")
+user, is_admin = ui.sign_in()
+stores = ui.stores()
+library = ui.prepare_library()
 
+options = ui.curricula_for(user)
 with st.sidebar:
+    if not options:
+        st.warning("No curriculum is available yet." + (" Add one on the Library page." if is_admin
+                                                          else " Ask an admin to add one."))
+        st.stop()
+    labels = [o["label"] for o in options]
+    default = labels.index(st.session_state["chat_curriculum"]) \
+        if st.session_state.get("chat_curriculum") in labels else 0
+    picked_label = st.selectbox("Curriculum", labels, index=default,
+                                help="Answers come only from this curriculum.")
+    st.session_state["chat_curriculum"] = picked_label
     api_key = st.text_input("Claude API key", type="password", value=_default_api_key(),
                             help="Or set ANTHROPIC_API_KEY as an env var / Streamlit secret.")
+current = options[labels.index(picked_label)]
 
-driver, schema_doc, qdrant_client, openai_client, course_names = load_course()
-st.caption(f"Ask questions grounded in the real Bluebonnet curriculum "
-           f"({', '.join(course_names) or 'no courses loaded'}, standards-aligned) — the model "
-           f"cites the specific Topic/Lesson, standard, and page.")
-if driver is None:
+st.caption(f"Answering from **{current['name']}** "
+           f"({'your curriculum' if current['kind'] == 'view' else 'base curriculum'}) — "
+           f"answers cite the specific topic/lesson, standard, and page.")
+if stores["driver"] is None:
     st.warning("Neo4j unavailable — chat will rely on semantic search only. "
                "(`docker compose up -d` in this directory to start it.)")
-if openai_client is None:
+if stores["openai"] is None:
     st.info("OPENAI_API_KEY not set — semantic_search is unavailable (the index was built "
             "with OpenAI embeddings); graph_query still works.")
-elif not qdrant_client.collection_exists(si.COLLECTION):
-    st.warning("curriculum_content isn't built yet — run `python3 build_content_index.py` "
-               "once, then restart. semantic_search will error until then.")
+elif not stores["qdrant"].collection_exists(si.COLLECTION):
+    st.warning("The search index isn't built yet — run `python3 build_content_index.py` once.")
 
 examples = [
-    "Which topics cover TEKS A.3C?",
-    "How do I teach function notation?",
-    "What's the crux of the Quadratic Formula lesson?",
-    "Give me practice problems for solving linear systems.",
+    "What modules and topics are in this curriculum?",
+    "Which lessons teach fractions, and on which pages?",
+    "What standards does the first lesson cover?",
+    "Give me practice problems from this curriculum for the first topic.",
 ]
 picked = st.pills("Try an example:", examples, selection_mode="single") \
     if hasattr(st, "pills") else None
-q = st.chat_input("Ask about any Bluebonnet course…")
+q = st.chat_input(f"Ask about {current['name']}…")
 question = q or picked
 
 
@@ -165,8 +129,8 @@ def _render_chain_graph(edges):
            config=Config(width=700, height=350, directed=True, physics=True, hierarchical=False))
 
 
-st.session_state.setdefault("chat", [])
-for role, msg, transcript in st.session_state["chat"]:
+history = st.session_state.setdefault("chats", {}).setdefault(current["scope"], [])
+for role, msg, transcript in history:
     with st.chat_message(role):
         st.markdown(msg)
         if transcript:
@@ -180,13 +144,16 @@ if question:
             st.warning("Enter a Claude API key in the sidebar to ask questions.")
     else:
         import anthropic
-        system = build_system_prompt(schema_doc, os.environ.get("PDF_BASE_URL"))
+        system = build_system_prompt(library["schema"], os.environ.get("PDF_BASE_URL"),
+                                     curriculum={"name": current["name"], "scope": current["scope"]})
         with st.chat_message("assistant"):
             with st.spinner("Thinking…"):
                 try:
+                    if current["kind"] == "view":
+                        ui.ensure_view_published(current["id"])   # first use / unpublished edits
                     ans, transcript = answer_with_tools(
                         anthropic.Anthropic(api_key=api_key), system, question,
-                        driver, qdrant_client, openai_client)
+                        stores["driver"], stores["qdrant"], stores["openai"], scope=current["scope"])
                 except Exception as e:
                     ans, transcript = f"⚠️ {e}", []
             st.markdown(ans)
@@ -196,5 +163,4 @@ if question:
                 _render_chain_graph(chain_edges)
             if transcript:
                 _show_transcript(transcript)
-        st.session_state["chat"] += [("user", question, None),
-                                     ("assistant", ans, transcript)]
+        history += [("user", question, None), ("assistant", ans, transcript)]

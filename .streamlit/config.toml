@@ -1,0 +1,3 @@
+[server]
+# module teacher editions are large PDFs
+maxUploadSize = 1000

@@ -9,7 +9,9 @@ noticed by reading transcripts. Idea borrowed from K12-KGraph's K12-Bench, which
 from graph queries so the expected answer is known by construction.
 
 Question families (all derived from data/*_nodes.jsonl + *_relationships.jsonl):
-  prereq   "What standards build towards <code>?"          expected = sources of buildsTowards
+  prereq   "Which TEKS standards are prerequisites for <TEKS>?"  expected = TEKS aligned to the
+                                                              Common Core codes that build towards
+                                                              <TEKS>'s own Common Core alignment
   neighbor "Which standards does the lesson <name> support?"  expected = lesson -> hasPart* -> LC
                                                               -> supports -> standard codes
   locate   "Which module/topic is the lesson <name> in?"   expected = names of hasPart ancestors
@@ -65,11 +67,22 @@ def build_questions(nodes, rels, families, per_family, rng):
     out = {f: [] for f in families}
 
     if "prereq" in families:
-        for tgt, srcs in builds_in.items():
-            exp = sorted({code(s) for s in srcs if code(s)})
-            if code(tgt) and exp:
+        # Asked and answered in TEKS, the way the agent is told to answer: progression only
+        # exists on the Common Core side, and the agent must never show a Common Core code, so
+        # expected = TEKS -> hasStandardAlignment -> CC <- buildsTowards - CC <- hasStandardAlignment - TEKS.
+        def is_teks(i):
+            return by_id.get(i, {}).get("properties", {}).get("jurisdiction") == "Texas"
+        cc_of, teks_of = defaultdict(set), defaultdict(set)
+        for r in rels:
+            if r["label"] == "hasStandardAlignment" and is_teks(r["source_identifier"]):
+                cc_of[r["source_identifier"]].add(r["target_identifier"])
+                teks_of[r["target_identifier"]].add(r["source_identifier"])
+        for teks, ccs in cc_of.items():
+            exp = {code(t) for cc in ccs for pre in builds_in[cc] for t in teks_of[pre]}
+            exp = sorted(c for c in exp if c and c != code(teks))
+            if code(teks) and exp:
                 out["prereq"].append({
-                    "question": f"What standards build towards {code(tgt)}?",
+                    "question": f"Which TEKS standards are prerequisites for {code(teks)}?",
                     "expected": exp})
 
     lessons = [n for n in nodes if n["labels"][0] == "Lesson" and name(n["identifier"])]
@@ -133,6 +146,8 @@ def main():
     ap.add_argument("--out", default="graph_bench.jsonl")
     ap.add_argument("--run", action="store_true", help="Score the live agent (uses API keys)")
     ap.add_argument("--limit", type=int, help="Max questions to run when --run")
+    ap.add_argument("--results", help="Where --run writes each answer + tool calls "
+                                      "(default: <out>.results.jsonl)")
     args = ap.parse_args()
 
     nodes, rels = load_all()
@@ -157,18 +172,29 @@ def main():
     qc, oc, client = si.get_client(), OpenAI(), anthropic.Anthropic()
 
     per_fam = defaultdict(list)
-    for q in qs[: args.limit]:
-        try:
-            answer, _ = agent.answer_with_tools(client, system, q["question"], driver, qc, oc)
-        except Exception as e:
-            print(f"ERROR {q['question']}: {e}", file=sys.stderr)
-            per_fam[q["family"]].append(0.0)
-            continue
-        recall, hit = score(answer, q["expected"])
-        per_fam[q["family"]].append(recall)
-        print(f"[{q['family']}] recall={recall:.2f} ({len(hit)}/{len(q['expected'])}) "
-              f"{q['question']}", file=sys.stderr)
+    results_path = args.results or args.out.replace(".jsonl", "") + ".results.jsonl"
+    with open(results_path, "w") as results:
+        for q in qs[: args.limit]:
+            try:
+                answer, transcript = agent.answer_with_tools(client, system, q["question"],
+                                                             driver, qc, oc)
+            except Exception as e:
+                print(f"ERROR {q['question']}: {e}", file=sys.stderr)
+                per_fam[q["family"]].append(0.0)
+                results.write(json.dumps({**q, "error": str(e)}) + "\n")
+                continue
+            recall, hit = score(answer, q["expected"])
+            per_fam[q["family"]].append(recall)
+            print(f"[{q['family']}] recall={recall:.2f} ({len(hit)}/{len(q['expected'])}) "
+                  f"{q['question']}", file=sys.stderr)
+            # Full answer + tool calls, so a failure can be traced to the graph, the retrieval,
+            # or the model -- a score alone can't tell those apart.
+            results.write(json.dumps({**q, "recall": recall, "hit": hit, "answer": answer,
+                                      "tools": [{"tool": t["tool"], "input": t["input"]}
+                                                for t in transcript]}, default=str) + "\n")
+            results.flush()
     driver.close()
+    print(f"Answers and tool calls: {results_path}", file=sys.stderr)
 
     print("\nfamily    n   mean recall   pass@1.0", file=sys.stderr)
     for fam, rs in per_fam.items():

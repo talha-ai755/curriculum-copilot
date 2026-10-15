@@ -115,6 +115,9 @@ question = q or picked
 def _show_transcript(transcript):
     with st.expander("🔎 How this was answered"):
         for step in transcript:
+            if step["tool"] == "note":  # the model's own working note between tool calls
+                st.markdown(f"_{step['input']}_")
+                continue
             st.markdown(f"**{step['tool']}**`({step['input']})`")
             st.json(step["result"])
 

@@ -183,6 +183,12 @@ AGENT_SYSTEM_TEMPLATE = (
 
     "## Output requirements\n\n"
 
+    "Your FINAL message -- the one with no tool call -- is the only part the teacher sees as the "
+    "answer, so it must contain the complete answer on its own (every finding, table and "
+    "citation). Anything you write alongside a tool call is shown only as a working note, never "
+    "as the answer: don't put answer content there, and don't reply with just a source line "
+    "after a last lookup.\n\n"
+
     "Visualization: whenever a graph_query result is a CHAIN of 2+ linked hops (a progression/"
     "prerequisite path, a standards-alignment crosswalk, or any 'walk from X through Y to Z' "
     "traversal), shape the RETURN so each row is one edge in the chain with exactly these column "
@@ -340,12 +346,14 @@ def answer_with_tools(client, system, question, driver, qdrant_client, openai_cl
     transcript is a list of {"tool", "input", "result"} for display."""
     messages = [{"role": "user", "content": question}]
     transcript = []
-    # Text from EVERY turn, not just the last: the model can write its answer next to a final
-    # tool call (e.g. one more graph_query just to fetch a citation page) and then end with only
-    # a "Source: ..." line. Returning only the last turn's first text block dropped the real
-    # answer (graph_bench: "Multiply a decimal by single-digit whole numbers..." answered with a
-    # bare source link after its first query had already returned 5.3A/5.3E/5.3K).
-    texts = []
+    # Text the model writes next to a tool call ("Let me look up...") is a working note, kept in
+    # the transcript as a {"tool": "note"} step -- not the answer, or nearly every answer would
+    # open with it (44/45 graph_bench answers did when all text was returned). The answer is the
+    # final turn's text, which AGENT_SYSTEM_TEMPLATE requires to be complete on its own: an
+    # answer once ended up only in a note, leaving a bare "Source: ..." line as the reply
+    # (graph_bench: "Multiply a decimal by single-digit whole numbers..."). If the final turn has
+    # no text at all, the notes are returned rather than an empty answer.
+    notes = []
     for _ in range(max_turns):
         # max_tokens=8192, not the earlier 1500: confirmed live that a citation-heavy answer (one
         # Markdown link per row across a large table, per the CITATION LINKS instructions above)
@@ -356,9 +364,12 @@ def answer_with_tools(client, system, question, driver, qdrant_client, openai_cl
         resp = client.messages.create(model=p2k.MODEL, max_tokens=8192, system=system,
                                        tools=TOOLS, messages=messages)
         messages.append({"role": "assistant", "content": resp.content})
-        texts += [b.text.strip() for b in resp.content if b.type == "text" and b.text.strip()]
+        texts = [b.text.strip() for b in resp.content if b.type == "text" and b.text.strip()]
         if resp.stop_reason != "tool_use":
-            return "\n\n".join(texts), transcript
+            return "\n\n".join(texts or notes), transcript
+        for text in texts:
+            notes.append(text)
+            transcript.append({"tool": "note", "input": text, "result": None})
         tool_results = []
         for block in resp.content:
             if block.type != "tool_use":
@@ -368,4 +379,4 @@ def answer_with_tools(client, system, question, driver, qdrant_client, openai_cl
             tool_results.append({"type": "tool_result", "tool_use_id": block.id,
                                   "content": json.dumps(result, default=str)})
         messages.append({"role": "user", "content": tool_results})
-    return "\n\n".join(texts + ["⚠️ Reached the tool-call limit without a final answer."]), transcript
+    return "\n\n".join(notes + ["⚠️ Reached the tool-call limit without a final answer."]), transcript

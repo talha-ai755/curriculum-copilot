@@ -129,7 +129,7 @@ def cached_page_text(module_name, pdf_path, cache_tag):
     return page_text
 
 
-def submit_course_batch(cache_tag, modules, state_path, custom_id_prefix=""):
+def submit_course_batch(cache_tag, modules, state_path, custom_id_prefix="", only=None):
     """Extract every module PDF's page text via pypdfium2 (pdf_to_kg.pdfium_page_text() -- NOT
     docling, see cached_page_text()'s docstring for why), batch pages, and submit ONE Batch API
     call spanning all modules. Saves batch id + custom_id -> (module, first, last) map to
@@ -140,6 +140,9 @@ def submit_course_batch(cache_tag, modules, state_path, custom_id_prefix=""):
     `custom_id_prefix`: prepended to each request's custom_id (e.g. "G6") -- only needs to be
     unique enough to be readable in the Anthropic console; doesn't affect parsing since
     custom_id_map (not the string itself) is what build_course_from_batch() keys off of.
+    `only`: {module: {(first, last), ...}} -- submit just these batches (a module update: the
+    rest reuse saved chunks, see changes.plan_module_update()). With nothing to submit, no API
+    call is made and the state records batch_id None.
     """
     # Deferred, like the backfill imports in build_course_from_batch(): lesson_pages imports
     # backfill_page_labels, whose module-level discover_courses() imports every submit_batch_*.py,
@@ -149,6 +152,8 @@ def submit_course_batch(cache_tag, modules, state_path, custom_id_prefix=""):
     requests = []
     custom_id_map = {}
     for module_name, pdf_path in modules.items():
+        if only is not None and not only.get(module_name):
+            continue
         print(f"Converting {module_name} via pypdfium2...", file=sys.stderr)
         page_text = cached_page_text(module_name, pdf_path, cache_tag)
         print(f"  {module_name}: {len(page_text)} pages", file=sys.stderr)
@@ -158,6 +163,8 @@ def submit_course_batch(cache_tag, modules, state_path, custom_id_prefix=""):
         _labels, lesson_of = lesson_pages.scan_pdf(pdf_path)
         for first, last, labeled_text in p2k.build_lesson_batches(page_text, lesson_of,
                                                                   max_pages=30):
+            if only is not None and (first, last) not in only[module_name]:
+                continue
             custom_id = f"{custom_id_prefix}{module_name.replace(' ', '')}_{first}_{last}"
             requests.append({
                 "custom_id": custom_id,
@@ -167,17 +174,20 @@ def submit_course_batch(cache_tag, modules, state_path, custom_id_prefix=""):
 
     print(f"Total batch requests: {len(requests)}", file=sys.stderr)
 
-    client = anthropic.Anthropic()
-    batch = client.messages.batches.create(requests=requests)
-    print(f"Submitted batch {batch.id}, status={batch.processing_status}", file=sys.stderr)
+    batch_id = None
+    if requests:
+        client = anthropic.Anthropic()
+        batch = client.messages.batches.create(requests=requests)
+        batch_id = batch.id
+        print(f"Submitted batch {batch.id}, status={batch.processing_status}", file=sys.stderr)
 
     # data/batch_state/, not /tmp: the state files for every course built so far lived in /tmp
     # and were lost, so none of those courses can be rebuilt from their (paid-for) batch results.
     os.makedirs(os.path.dirname(state_path) or ".", exist_ok=True)
     with open(state_path, "w") as f:
-        json.dump({"batch_id": batch.id, "custom_id_map": custom_id_map}, f)
+        json.dump({"batch_id": batch_id, "custom_id_map": custom_id_map}, f)
     print(f"State saved to {state_path}", file=sys.stderr)
-    return batch.id
+    return batch_id
 
 
 def _wait_for_batch(client, batch_id):
@@ -234,13 +244,15 @@ def collect_batch_chunks(state_path, modules):
     with open(state_path) as f:
         state = json.load(f)
     batch_id, custom_id_map = state["batch_id"], state["custom_id_map"]
+    chunks_by_module = {m: [] for m in modules}
+    errors = []
+    if batch_id is None:   # nothing was submitted (every batch reused a saved chunk)
+        return chunks_by_module, errors
 
     client = anthropic.Anthropic()
     print(f"Polling batch {batch_id}...", file=sys.stderr)
     _wait_for_batch(client, batch_id)
 
-    chunks_by_module = {m: [] for m in modules}
-    errors = []
     for entry in client.messages.batches.results(batch_id):
         info = custom_id_map.get(entry.custom_id)
         if not info:

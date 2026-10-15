@@ -870,17 +870,19 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
     used_content_ids = set()
 
     def content_id(page, *texts):
-        """Stable LearningComponent id from module + page + normalized text -- NOT the item's
-        position in the extracted list (which every re-extraction renumbers). Unchanged content
-        keeps its id across re-extractions, re-batching and repairs that move it to another
-        lesson, so user edits, hand fixes and the version diff keep matching it. Identical
-        text on the same page (rare; merge() already dedups (page, outcome)) gets a suffix."""
+        """Stable LearningComponent id from module + normalized text -- NOT the item's position
+        in the extracted list (every re-extraction renumbers it) and NOT its page (a PDF update
+        that inserts or removes pages shifts every later page: with the page in the key, a
+        2-page insertion kept only 60 of 341 ids). Unchanged content keeps its id across
+        re-extractions, re-batching, page shifts and repairs that move it to another lesson, so
+        user edits, hand fixes and the version diff keep matching it. The same text appearing
+        again in the module gets an occurrence suffix. `page` stays a node property."""
         digest = hashlib.sha1(" ".join(" ".join((t or "").lower().split())
                                         for t in texts).encode()).hexdigest()[:16]
-        key, n = f"{module['number']}:p{page}:{digest}", 1
+        key, n = f"{module['number']}:{digest}", 1
         while key in used_content_ids:
             n += 1
-            key = f"{module['number']}:p{page}:{digest}:{n}"
+            key = f"{module['number']}:{digest}:{n}"
         used_content_ids.add(key)
         return nid("LearningComponent", key)
 

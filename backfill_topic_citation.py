@@ -41,6 +41,7 @@ import sys
 from collections import defaultdict
 
 from backfill_page_labels import COURSES
+from snapshot import snapshot_course
 
 GAP_THRESHOLD = 20
 
@@ -147,6 +148,7 @@ def main():
               file=sys.stderr)
 
         if args.write:
+            snapshot_course(jsonl_path, "backfill_topic_citation")
             with open(jsonl_path, "w") as f:
                 for n in nodes:
                     f.write(json.dumps(n) + "\n")

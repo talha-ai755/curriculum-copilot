@@ -41,6 +41,7 @@ import sys
 
 import pdf_to_kg as p2k
 from backfill_page_labels import COURSES, module_of_each_node
+from snapshot import snapshot_course
 
 
 def apply(nodes, rels, module_pdfs):
@@ -111,6 +112,7 @@ def main():
         apply(nodes, rels, module_pdfs)
 
         if args.write:
+            snapshot_course(jsonl_path, "backfill_source_text")
             with open(jsonl_path, "w") as f:
                 for n in nodes:
                     f.write(json.dumps(n) + "\n")

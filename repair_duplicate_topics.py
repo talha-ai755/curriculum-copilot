@@ -45,6 +45,7 @@ import glob
 import json
 import re
 import sys
+from snapshot import snapshot_course
 
 GRADES_K5 = sorted(p for p in glob.glob("data/grade[0-9]_nodes.jsonl")
                     + glob.glob("data/gradek_nodes.jsonl"))
@@ -318,6 +319,7 @@ def process_course(jsonl_path, write):
           file=sys.stderr)
 
     if write:
+        snapshot_course(jsonl_path, "repair_duplicate_topics")
         with open(jsonl_path, "w") as f:
             for n in nodes:
                 f.write(json.dumps(n) + "\n")

@@ -22,7 +22,7 @@ MODULES = {
     "Module 5": BASE + "Eighth Grade Math Teacher Edition, Volume 2 Module 5.pdf",
 }
 COURSE_NODES_PATH = "data/grade8_nodes.jsonl"  # lets backfill_page_labels.py auto-discover MODULES
-STATE_PATH = "/tmp/batch_g8_state.json"
+STATE_PATH = "data/batch_state/batch_g8_state.json"
 
 if __name__ == "__main__":
     bp.submit_course_batch("g8", MODULES, STATE_PATH, custom_id_prefix="G8")

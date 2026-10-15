@@ -32,6 +32,7 @@ import re
 import sys
 
 from repair_duplicate_topics import report_suspicious_wide_topics, _index, _norm_name
+from snapshot import snapshot_course
 
 GRADES_K5 = sorted(glob.glob("data/grade[0-9]_nodes.jsonl") + glob.glob("data/gradek_nodes.jsonl"))
 
@@ -159,13 +160,27 @@ def merge_duplicate_lessons(nodes, rels):
     n_merged = n_deduped = 0
 
     for t in topics:
+        # Keyed on (name, position), not name alone: curricula reuse the same lesson objective as
+        # the title of two consecutive, genuinely distinct lessons (confirmed: Grade K "Count 10
+        # objects in linear and array configuration" is both Lesson 26, pp. 229-236, and Lesson
+        # 27, pp. 237-243). Name-only grouping merged 65 such real K-5 lessons into one. A lesson
+        # with no position joins its same-named siblings only when they all share ONE position --
+        # otherwise there's no telling which real lesson it duplicates, so it's left alone.
         by_name = {}
         for cid in children_of.get(t["identifier"], []):
             c = by_id.get(cid)
             if c and c["labels"][0] == "Lesson":
                 by_name.setdefault(_norm_name(c["properties"].get("name")), []).append(c)
+        by_key = {}
+        for name, same_name in by_name.items():
+            positions = {str(l["properties"].get("position") or "").strip() for l in same_name} - {""}
+            for l in same_name:
+                pos = str(l["properties"].get("position") or "").strip()
+                if not pos and len(positions) == 1:
+                    pos = next(iter(positions))
+                by_key.setdefault((name, pos or l["identifier"]), []).append(l)
 
-        for name, group in by_name.items():
+        for (name, _pos), group in by_key.items():
             if len(group) < 2 or not name:
                 continue
             group.sort(key=lambda l: lc_count(l["identifier"]), reverse=True)
@@ -208,6 +223,12 @@ def merge_duplicate_lessons(nodes, rels):
                     dup_node = by_id.pop(dup_id, None)
                     if dup_node in nodes:
                         nodes.remove(dup_node)
+                # The deleted duplicates' own outgoing edges (`supports` -> standards) go too --
+                # leaving them was the source of dangling supports edges in Grade K/1/4/5.
+                if dup_lc_node_ids:
+                    dropped = set(dup_lc_node_ids)
+                    rels[:] = [r for r in rels if r["source_identifier"] not in dropped
+                               and r["target_identifier"] not in dropped]
 
                 kp, lp = keeper["properties"], loser["properties"]
                 if lp.get("pdfPageStart") is not None:
@@ -253,6 +274,7 @@ def process_course(jsonl_path, write):
           file=sys.stderr)
 
     if write:
+        snapshot_course(jsonl_path, "fix_misattributed_topics")
         with open(jsonl_path, "w") as f:
             for n in nodes:
                 f.write(json.dumps(n) + "\n")

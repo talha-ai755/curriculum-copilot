@@ -87,6 +87,40 @@ def load_graph(driver, nodes, rels):
             rows=rows)
 
 
+def find_stale(driver, nodes, rels):
+    """What's in Neo4j but no longer in (nodes, rels): load_graph() only ever MERGEs, so a node a
+    repair script deleted, or an edge it redirected (repairs keep the edge's identifier but change
+    its endpoints), stays live forever. Edges are compared by (source, type, target), not by
+    their identifier property, for exactly that reason. Only nodes carrying one of the labels in
+    `nodes` are considered, so anything else in the database is never touched.
+    Returns (stale_node_ids, stale_edge_keys)."""
+    want_nodes = {n["identifier"] for n in nodes}
+    want_edges = {(r["source_identifier"], r["label"], r["target_identifier"]) for r in rels}
+    labels = sorted({n["labels"][0] for n in nodes})
+    live_nodes = run_cypher(driver, "MATCH (n) WHERE any(l IN labels(n) WHERE l IN $labels) "
+                                     "RETURN n.identifier AS i", {"labels": labels})
+    live_edges = run_cypher(driver, "MATCH (a)-[r]->(b) WHERE any(l IN labels(a) WHERE l IN $labels) "
+                                     "AND any(l IN labels(b) WHERE l IN $labels) "
+                                     "RETURN a.identifier AS s, type(r) AS t, b.identifier AS d",
+                            {"labels": labels})
+    stale_nodes = sorted({row["i"] for row in live_nodes} - want_nodes)
+    stale_edges = sorted({(row["s"], row["t"], row["d"]) for row in live_edges} - want_edges)
+    return stale_nodes, stale_edges
+
+
+def prune_stale(driver, stale_nodes, stale_edges):
+    """Delete what find_stale() returned. Edges first, then nodes (DETACH, for any edge to a
+    stale node that wasn't itself listed)."""
+    for i in range(0, len(stale_edges), 1000):
+        driver.execute_query(
+            "UNWIND $rows AS row MATCH (a {identifier: row[0]})-[r]->(b {identifier: row[2]}) "
+            "WHERE type(r) = row[1] DELETE r",
+            rows=[list(k) for k in stale_edges[i:i + 1000]])
+    for i in range(0, len(stale_nodes), 1000):
+        driver.execute_query("UNWIND $ids AS id MATCH (n {identifier: id}) DETACH DELETE n",
+                             ids=stale_nodes[i:i + 1000])
+
+
 def schema_description(nodes, rels):
     """Text description of the graph shape for the agent's system prompt — built from the
     in-memory lists already on hand, no extra Neo4j round-trip needed."""

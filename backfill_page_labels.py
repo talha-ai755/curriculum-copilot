@@ -46,6 +46,7 @@ import re
 import sys
 
 import pypdfium2 as pdfium
+from snapshot import snapshot_course
 
 
 def _page_text(page):
@@ -209,6 +210,7 @@ def main():
         apply(nodes, rels, module_pdfs)
 
         if args.write:
+            snapshot_course(jsonl_path, "backfill_page_labels")
             with open(jsonl_path, "w") as f:
                 for n in nodes:
                     f.write(json.dumps(n) + "\n")

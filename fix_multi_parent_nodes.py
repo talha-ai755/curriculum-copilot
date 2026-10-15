@@ -38,6 +38,7 @@ Usage:
 import argparse
 import json
 import sys
+from snapshot import snapshot_course
 
 # {course nodes_path: [(node_id, resolution, extra), ...]}
 # extra = correct parent identifier for "reparent", None otherwise.
@@ -84,16 +85,24 @@ RESOLUTIONS = {
 }
 
 
-def process_course(nodes_path, resolutions, write):
-    rels_path = nodes_path.replace("_nodes.jsonl", "_relationships.jsonl")
-    with open(nodes_path) as f:
-        nodes = [json.loads(l) for l in f]
-    with open(rels_path) as f:
-        rels = [json.loads(l) for l in f]
+def apply(nodes, rels, resolutions):
+    """Apply one course's RESOLUTIONS to `nodes`/`rels` in place. Idempotent: re-running on an
+    already-fixed course changes nothing, so batch_pipeline.build_course_from_batch() can run it
+    on every build. Returns {"deleted": set of removed ids, "stale": [(node_id, resolution)]}.
 
-    print(f"\n=== {nodes_path} ===", file=sys.stderr)
-    to_delete_node_ids = set()
+    `stale` lists resolutions whose node isn't in this graph. Node ids are deterministic from the
+    extraction, so a rebuild from the SAME batch results reproduces them and every resolution
+    applies; a fresh re-extraction can produce different ids, and then these hand-made fixes no
+    longer match anything -- reported, never silently skipped, so they can be redone by hand
+    (a "delete" whose node is already gone is just already applied, not stale)."""
+    by_id = {n["identifier"]: n for n in nodes}
+    node_ids = set(by_id)
+    to_delete_node_ids, stale = set(), []
     for node_id, resolution, extra in resolutions:
+        if node_id not in node_ids:
+            if resolution != "delete":
+                stale.append((node_id, resolution))
+            continue
         current_parents = [r["source_identifier"] for r in rels
                             if r["label"] == "hasPart" and r["target_identifier"] == node_id]
         if resolution == "delete":
@@ -105,15 +114,26 @@ def process_course(nodes_path, resolutions, write):
             rels[:] = [r for r in rels if not (r["source_identifier"] == node_id
                                                 or r["target_identifier"] == node_id)]
         elif resolution == "keep_module":
-            dropped = [p for p in current_parents if p != extra]
-            keep = [p for p in current_parents if p == extra] or current_parents[:1]
-            print(f"  KEEP_MODULE {node_id}: keep edge from {keep[0]!r}, drop "
+            if len(current_parents) <= 1:
+                continue  # already applied
+            # The module-level (groupLevel "0") parent, not whichever edge happens to come first.
+            modules = [p for p in current_parents
+                       if by_id.get(p, {}).get("properties", {}).get("groupLevel") == "0"]
+            if len(modules) != 1:
+                stale.append((node_id, resolution))
+                continue
+            keep_parent = modules[0]
+            print(f"  KEEP_MODULE {node_id}: keep edge from {keep_parent!r}, drop "
                   f"{len(current_parents) - 1} other(s)", file=sys.stderr)
-            keep_parent = keep[0]
             rels[:] = [r for r in rels if not (r["label"] == "hasPart"
                                                 and r["target_identifier"] == node_id
                                                 and r["source_identifier"] != keep_parent)]
         elif resolution == "reparent":
+            if current_parents == [extra]:
+                continue  # already applied
+            if extra not in node_ids:
+                stale.append((node_id, resolution))
+                continue
             print(f"  REPARENT {node_id}: drop {len(current_parents)} existing edge(s), "
                   f"add hasPart from {extra}", file=sys.stderr)
             rels[:] = [r for r in rels if not (r["label"] == "hasPart"
@@ -130,8 +150,24 @@ def process_course(nodes_path, resolutions, write):
 
     if to_delete_node_ids:
         nodes[:] = [n for n in nodes if n["identifier"] not in to_delete_node_ids]
+    for node_id, resolution in stale:
+        print(f"  STALE {resolution} {node_id}: node not in this graph (re-extracted since this "
+              f"fix was written?) -- redo this fix by hand", file=sys.stderr)
+    return {"deleted": to_delete_node_ids, "stale": stale}
+
+
+def process_course(nodes_path, resolutions, write):
+    rels_path = nodes_path.replace("_nodes.jsonl", "_relationships.jsonl")
+    with open(nodes_path) as f:
+        nodes = [json.loads(l) for l in f]
+    with open(rels_path) as f:
+        rels = [json.loads(l) for l in f]
+
+    print(f"\n=== {nodes_path} ===", file=sys.stderr)
+    to_delete_node_ids = apply(nodes, rels, resolutions)["deleted"]
 
     if write:
+        snapshot_course(nodes_path, "fix_multi_parent_nodes")
         with open(nodes_path, "w") as f:
             for n in nodes:
                 f.write(json.dumps(n) + "\n")

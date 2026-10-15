@@ -21,7 +21,7 @@ A new course (e.g. Grade 6, Grade 7) needs two small files, not two ~130-line co
         MODULES = bp.discover_modules(BASE)  # {"Module 1": ".../Module 1.pdf", ...}, no need to
                                               # hand-type paths or know the module count up front
         COURSE_NODES_PATH = "data/grade6_nodes.jsonl"  # lets backfill_page_labels.py auto-discover
-        STATE_PATH = "/tmp/batch_g6_state.json"
+        STATE_PATH = "data/batch_state/batch_g6_state.json"
         if __name__ == "__main__":
             bp.submit_course_batch("g6", MODULES, STATE_PATH)
 
@@ -161,6 +161,9 @@ def submit_course_batch(cache_tag, modules, state_path, custom_id_prefix=""):
     batch = client.messages.batches.create(requests=requests)
     print(f"Submitted batch {batch.id}, status={batch.processing_status}", file=sys.stderr)
 
+    # data/batch_state/, not /tmp: the state files for every course built so far lived in /tmp
+    # and were lost, so none of those courses can be rebuilt from their (paid-for) batch results.
+    os.makedirs(os.path.dirname(state_path) or ".", exist_ok=True)
     with open(state_path, "w") as f:
         json.dump({"batch_id": batch.id, "custom_id_map": custom_id_map}, f)
     print(f"State saved to {state_path}", file=sys.stderr)
@@ -272,7 +275,15 @@ def build_course_from_batch(state_path, module_pdfs, course_name, out_stem,
     from backfill_sibling_labels import apply as apply_sibling_labels
     from backfill_page_rollups import apply as apply_page_rollups
     from backfill_topic_citation import apply as apply_topic_citation
+    from check_cycles import find_cycles
     from check_orphans import find_orphans, report as report_orphans
+    from find_multi_parent_nodes import find_multi_parents, report as report_multi_parents
+    import fix_misattributed_topics
+    import fix_multi_parent_nodes
+    import repair_duplicate_topics
+    from snapshot import snapshot_course
+
+    nodes_path, rels_path = f"{out_stem}_nodes.jsonl", f"{out_stem}_relationships.jsonl"
 
     print("  fixing page labels off the real PDFs...", file=sys.stderr)
     apply_page_labels(nodes, rels, module_pdfs)
@@ -280,14 +291,40 @@ def build_course_from_batch(state_path, module_pdfs, course_name, out_stem,
     apply_sibling_labels(nodes, rels)
     print("  recomputing Lesson/LessonGrouping page rollups...", file=sys.stderr)
     apply_page_rollups(nodes, rels)
+    # The structural repairs used to be run by hand with --write on the built files, so a rebuild
+    # silently dropped them. All three are idempotent (no-ops on an already-repaired course,
+    # verified on every course in data/), so they run on every build. They need the page rollups
+    # above (topic/lesson page ranges) and fold/recompute the ranges they touch themselves. Rollups
+    # are deliberately NOT re-run after them: apply_page_rollups() ends a Lesson at its last
+    # LearningComponent page, which truncates K-5 lessons whose Problem Set/Exit Ticket/Homework
+    # pages carry no LearningComponent (e.g. Grade 1 "Analyze and describe embedded numbers":
+    # stored 28-40, contiguous with the next lesson at 41; a re-rollup gives 28-32).
+    print("  merging blank-title topics / removing empty duplicate lessons...", file=sys.stderr)
+    repair_duplicate_topics.apply(nodes, rels)
+    print("  reassigning misattributed lesson ranges...", file=sys.stderr)
+    fix_misattributed_topics.apply(nodes, rels)
+    print("  applying hand-verified multi-parent fixes...", file=sys.stderr)
+    fix_multi_parent_nodes.apply(nodes, rels,
+                                 fix_multi_parent_nodes.RESOLUTIONS.get(os.path.relpath(nodes_path), []))
     print("  precomputing Module/Topic citation targets...", file=sys.stderr)
     apply_topic_citation(nodes, rels)
-    # Detection-only safety net (see check_orphans.py) -- never blocks the build, since whether an
-    # orphan's correct parent is inferable from its name is a judgment call, not something to fail
-    # a build over. Found live, twice, only by manual Neo4j spelunking before this existed.
-    report_orphans(f"{out_stem}_nodes.jsonl", find_orphans(nodes, rels))
+    # Detection-only safety nets -- never block the build: the right fix for each needs a person
+    # reading the PDF page (see each script's docstring), not something to fail a build over.
+    report_orphans(nodes_path, find_orphans(nodes, rels))
+    report_multi_parents(nodes_path, find_multi_parents(nodes, rels))
+    node_ids = {n["identifier"] for n in nodes}
+    dangling = sum(1 for r in rels
+                   if r["source_identifier"] not in node_ids or r["target_identifier"] not in node_ids)
+    if dangling:
+        print(f"  WARNING: {dangling} edge(s) point at a node not in this course (never loaded "
+              f"into Neo4j)", file=sys.stderr)
+    for edge_type in ("hasPart", "hasChild", "buildsTowards"):
+        cycles = find_cycles(rels, edge_type)
+        if cycles:
+            print(f"  WARNING: {len(cycles)} {edge_type} cycle(s) -- run check_cycles.py for "
+                  f"details", file=sys.stderr)
 
-    nodes_path, rels_path = f"{out_stem}_nodes.jsonl", f"{out_stem}_relationships.jsonl"
+    snapshot_course(nodes_path, f"before-rebuild-{os.path.basename(out_stem)}")
     with open(nodes_path, "w") as f:
         for n in nodes:
             f.write(json.dumps(n) + "\n")

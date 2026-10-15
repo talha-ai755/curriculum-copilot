@@ -29,6 +29,7 @@ import sys
 
 import citation
 from backfill_page_labels import COURSES, module_of_each_node
+from snapshot import snapshot_course
 
 
 def main():
@@ -76,6 +77,7 @@ def main():
               file=sys.stderr)
 
         if args.write:
+            snapshot_course(jsonl_path, "backfill_pdf_citation")
             with open(jsonl_path, "w") as f:
                 for n in nodes:
                     f.write(json.dumps(n) + "\n")

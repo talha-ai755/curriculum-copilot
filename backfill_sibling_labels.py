@@ -34,6 +34,7 @@ import json
 import sys
 
 from backfill_page_labels import module_of_each_node
+from snapshot import snapshot_course
 
 COURSES = sorted(p for p in glob.glob("data/*_nodes.jsonl") if ".v" not in p and "pre_" not in p)
 
@@ -101,6 +102,7 @@ def process_course(jsonl_path, write):
     apply(nodes, rels)
 
     if write:
+        snapshot_course(jsonl_path, "backfill_sibling_labels")
         with open(jsonl_path, "w") as f:
             for n in nodes:
                 f.write(json.dumps(n) + "\n")

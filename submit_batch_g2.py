@@ -15,7 +15,7 @@ import batch_pipeline as bp
 BASE = "/home/talha/Downloads/G2/"
 MODULES = bp.discover_modules(BASE, recursive=True)
 COURSE_NODES_PATH = "data/grade2_nodes.jsonl"  # lets backfill_page_labels.py auto-discover MODULES
-STATE_PATH = "/tmp/batch_g2_state.json"
+STATE_PATH = "data/batch_state/batch_g2_state.json"
 
 if __name__ == "__main__":
     print(f"Discovered {len(MODULES)} module(s): {list(MODULES)}")

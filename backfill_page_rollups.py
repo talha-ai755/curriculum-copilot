@@ -42,8 +42,12 @@ Usage:
 import argparse
 import glob
 import json
+import os
 import sys
 from snapshot import snapshot_course
+
+import lesson_pages
+from backfill_page_labels import COURSES as COURSE_PDFS, module_of_each_node
 
 COURSES = sorted(p for p in glob.glob("data/*_nodes.jsonl") if ".v" not in p and "pre_" not in p)
 
@@ -89,28 +93,69 @@ def learning_component_descendants(node_id, children_of, by_id, memo):
     return result
 
 
-def apply(nodes, rels):
+def _lesson_descendants(node_id, children_of, by_id):
+    """Every Lesson reachable from node_id via hasPart (a Module reaches its Topics' Lessons)."""
+    out, stack, seen = [], list(children_of.get(node_id, [])), set()
+    while stack:
+        cid = stack.pop()
+        if cid in seen or cid not in by_id:
+            continue
+        seen.add(cid)
+        if by_id[cid]["labels"][0] == "Lesson":
+            out.append(by_id[cid])
+        elif by_id[cid]["labels"][0] == "LessonGrouping":
+            stack.extend(children_of.get(cid, []))
+    return out
+
+
+def apply(nodes, rels, module_pdfs=None):
     """Recompute pageStartLabel/pageEndLabel/pdfPageStart/pdfPageEnd on every Lesson/LessonGrouping
     in `nodes`, for the ONE course `nodes`/`rels` belong to. Mutates `nodes` in place. Returns a
     stats dict (includes up to 15 sample diffs for logging).
+
+    Lessons, in order of reliability (scored against lesson_pages.py's running headers on 1,030
+    lessons -- start AND end exact: header 100% by construction, existing extraction range 46.7%,
+    LearningComponent rollup 11.8%):
+      1. `module_pdfs` given ({module name: pdf path}) and the PDF's running headers name this
+         lesson -> the header range (lesson_pages.py).
+      2. the lesson's existing range, if it covers all its LearningComponent pages.
+      3. the LearningComponent rollup -- it ends a lesson at its last LearningComponent page, so
+         it misses trailing Problem Set/Homework/Template pages; only a last resort.
+    Topics/Modules (LessonGrouping) span their own LearningComponents (outlier-skipped, see
+    _pick_extreme) AND all their Lessons' ranges, so they're never narrower than their lessons.
 
     Factored out of process_course()'s body so batch_pipeline.build_course_from_batch() can run
     this as an in-memory step right after a course is built, not just as this file's standalone
     multi-course CLI."""
     by_id = {n["identifier"]: n for n in nodes}
-    children_of = {}
+    children_of, parent_of = {}, {}
     for r in rels:
         if r["label"] == "hasPart":
             children_of.setdefault(r["source_identifier"], []).append(r["target_identifier"])
+            parent_of[r["target_identifier"]] = r["source_identifier"]
+
+    header_ranges, page_labels = {}, {}
+    if module_pdfs:
+        for module_name, pdf_path in module_pdfs.items():
+            print(f"  reading {module_name} running headers...", file=sys.stderr)
+            page_labels[module_name], lesson_of = lesson_pages.scan_pdf(pdf_path)
+            header_ranges[module_name] = lesson_pages.lesson_ranges(lesson_of)
+        node_module = module_of_each_node(nodes, rels)
 
     memo = {}
     changed_start_label = changed_end_label = changed_start_pdf = changed_end_pdf = 0
     no_descendants = 0
+    source_counts = {"header": 0, "kept": 0, "rollup": 0}
     samples = []
+    new_ranges = {}  # identifier -> (start_pdf, start_label, end_pdf, end_label), Lessons first
 
-    for n in nodes:
-        if n["labels"][0] not in ("Lesson", "LessonGrouping"):
-            continue
+    def lc_label_on(descendants, page):
+        return next((d["properties"].get("pageLabel", "") for d in descendants
+                     if d["properties"]["pdfPage"] == page and d["properties"].get("pageLabel")), "")
+
+    ordered = sorted((n for n in nodes if n["labels"][0] in ("Lesson", "LessonGrouping")),
+                     key=lambda n: n["labels"][0] != "Lesson")
+    for n in ordered:
         p = n["properties"]
         descendants = [
             d for d in learning_component_descendants(n["identifier"], children_of, by_id, memo)
@@ -121,17 +166,57 @@ def apply(nodes, rels):
             # min() would otherwise pick it as pdfPageStart=0 with an empty pageStartLabel.
             if d["properties"].get("pdfPage")
         ]
-        if not descendants:
+        if n["labels"][0] == "Lesson":
+            header = None
+            if module_pdfs:
+                module_name = node_module.get(n["identifier"])
+                topic = by_id.get(parent_of.get(n["identifier"]), {}).get("properties", {})
+                header = lesson_pages.lookup(header_ranges.get(module_name, {}),
+                                             topic.get("position"), p.get("position"))
+            if header:
+                labels = page_labels[module_name]
+                new_ranges[n["identifier"]] = (
+                    header[0], labels.get(header[0]) or lc_label_on(descendants, header[0]),
+                    header[1], labels.get(header[1]) or lc_label_on(descendants, header[1]))
+                source_counts["header"] += 1
+                continue
+            if descendants:
+                lo = _pick_extreme(descendants, reverse=False)["properties"]["pdfPage"]
+                hi = _pick_extreme(descendants, reverse=True)["properties"]["pdfPage"]
+                s, e = p.get("pdfPageStart"), p.get("pdfPageEnd")
+                if s and e and s <= lo and e >= hi:
+                    new_ranges[n["identifier"]] = (s, p.get("pageStartLabel", ""),
+                                                   e, p.get("pageEndLabel", ""))
+                    source_counts["kept"] += 1
+                    continue
+        if not descendants and n["labels"][0] == "Lesson":
             no_descendants += 1
             continue
 
-        min_child = _pick_extreme(descendants, reverse=False)
-        max_child = _pick_extreme(descendants, reverse=True)
+        candidates = []  # (pdfPage, pageLabel)
+        if descendants:
+            for reverse in (False, True):
+                d = _pick_extreme(descendants, reverse=reverse)["properties"]
+                candidates.append((d["pdfPage"], d.get("pageLabel", "")))
+        if n["labels"][0] == "LessonGrouping":
+            for lesson in _lesson_descendants(n["identifier"], children_of, by_id):
+                r = new_ranges.get(lesson["identifier"])
+                if r:
+                    candidates += [(r[0], r[1]), (r[2], r[3])]
+        else:
+            source_counts["rollup"] += 1
+        if not candidates:
+            no_descendants += 1
+            continue
+        start = min(candidates, key=lambda c: c[0])
+        end = max(candidates, key=lambda c: c[0])
+        new_ranges[n["identifier"]] = (start[0], start[1], end[0], end[1])
 
-        new_start_label = min_child["properties"].get("pageLabel", "")
-        new_end_label = max_child["properties"].get("pageLabel", "")
-        new_start_pdf = min_child["properties"]["pdfPage"]
-        new_end_pdf = max_child["properties"]["pdfPage"]
+    for n in ordered:
+        if n["identifier"] not in new_ranges:
+            continue
+        p = n["properties"]
+        new_start_pdf, new_start_label, new_end_pdf, new_end_label = new_ranges[n["identifier"]]
 
         row_changed = []
         if p.get("pageStartLabel", "") != new_start_label:
@@ -162,6 +247,9 @@ def apply(nodes, rels):
     print(f"  pdfPageStart changed:   {changed_start_pdf}", file=sys.stderr)
     print(f"  pdfPageEnd changed:     {changed_end_pdf}", file=sys.stderr)
     print(f"  no LearningComponent descendants with pdfPage (left untouched): {no_descendants}", file=sys.stderr)
+    print(f"  Lesson ranges from: running header {source_counts['header']}, existing range kept "
+          f"{source_counts['kept']}, LearningComponent rollup {source_counts['rollup']}",
+          file=sys.stderr)
 
     print("\n  Sample diffs:", file=sys.stderr)
     for labels, name, row_changed in samples:
@@ -171,7 +259,7 @@ def apply(nodes, rels):
 
     return {"changed_start_label": changed_start_label, "changed_end_label": changed_end_label,
             "changed_start_pdf": changed_start_pdf, "changed_end_pdf": changed_end_pdf,
-            "no_descendants": no_descendants, "samples": samples}
+            "no_descendants": no_descendants, "sources": source_counts, "samples": samples}
 
 
 def process_course(jsonl_path, write):
@@ -182,7 +270,11 @@ def process_course(jsonl_path, write):
     with open(rels_path) as f:
         rels = [json.loads(l) for l in f]
 
-    apply(nodes, rels)
+    # PDFs come from the course's submit_batch_*.py MODULES; a course without them (or with
+    # unreachable PDFs) still gets the graph-only fallbacks.
+    module_pdfs = COURSE_PDFS.get(jsonl_path)
+    apply(nodes, rels, module_pdfs if module_pdfs and all(os.path.exists(p) for p in
+                                                          module_pdfs.values()) else None)
 
     if write:
         snapshot_course(jsonl_path, "backfill_page_rollups")

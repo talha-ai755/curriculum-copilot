@@ -289,16 +289,13 @@ def build_course_from_batch(state_path, module_pdfs, course_name, out_stem,
     apply_page_labels(nodes, rels, module_pdfs)
     print("  rescuing blanks from same-page siblings...", file=sys.stderr)
     apply_sibling_labels(nodes, rels)
-    print("  recomputing Lesson/LessonGrouping page rollups...", file=sys.stderr)
-    apply_page_rollups(nodes, rels)
+    print("  recomputing Lesson/LessonGrouping page ranges (running headers)...", file=sys.stderr)
+    apply_page_rollups(nodes, rels, module_pdfs)
     # The structural repairs used to be run by hand with --write on the built files, so a rebuild
     # silently dropped them. All three are idempotent (no-ops on an already-repaired course,
-    # verified on every course in data/), so they run on every build. They need the page rollups
-    # above (topic/lesson page ranges) and fold/recompute the ranges they touch themselves. Rollups
-    # are deliberately NOT re-run after them: apply_page_rollups() ends a Lesson at its last
-    # LearningComponent page, which truncates K-5 lessons whose Problem Set/Exit Ticket/Homework
-    # pages carry no LearningComponent (e.g. Grade 1 "Analyze and describe embedded numbers":
-    # stored 28-40, contiguous with the next lesson at 41; a re-rollup gives 28-32).
+    # verified on every course in data/), so they run on every build. They need the page ranges
+    # above, and they move lessons between topics -- so ranges are recomputed after them too
+    # (lesson_pages.scan_pdf() is cached, so the PDFs aren't read twice).
     print("  merging blank-title topics / removing empty duplicate lessons...", file=sys.stderr)
     repair_duplicate_topics.apply(nodes, rels)
     print("  reassigning misattributed lesson ranges...", file=sys.stderr)
@@ -306,6 +303,8 @@ def build_course_from_batch(state_path, module_pdfs, course_name, out_stem,
     print("  applying hand-verified multi-parent fixes...", file=sys.stderr)
     fix_multi_parent_nodes.apply(nodes, rels,
                                  fix_multi_parent_nodes.RESOLUTIONS.get(os.path.relpath(nodes_path), []))
+    print("  recomputing page ranges after repairs...", file=sys.stderr)
+    apply_page_rollups(nodes, rels, module_pdfs)
     print("  precomputing Module/Topic citation targets...", file=sys.stderr)
     apply_topic_citation(nodes, rels)
     # Detection-only safety nets -- never block the build: the right fix for each needs a person

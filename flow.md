@@ -26,7 +26,8 @@ The README covers setup; this file covers the order things run in and why.
     30 pages, lessons found from the running headers by `lesson_pages.py`; intro pages travel with
     the lesson after them), with a 3-page overlap, each page labelled `=== PDF PAGE N ===`. Fixed
     25-page windows split 572 of 1,068 lessons; this splits only the 63 lessons longer than 30
-    pages on their own (front matter gets its own batch rather than splitting Lesson 1). PDFs without recognizable headers fall back to fixed 25-page windows;
+    pages on their own (front matter gets its own batch rather than splitting Lesson 1), and a batch never mixes
+    two topics (`lesson_pages.topic_of_pages`). PDFs without recognizable headers fall back to fixed 25-page windows;
   - sends one Batch API request per batch with the structured-output schema
     (`pdf_to_kg.EXTRACTION_SCHEMA`);
   - saves the batch id and the `custom_id` map to `data/batch_state/` — keep these files: they
@@ -38,7 +39,7 @@ The README covers setup; this file covers the order things run in and why.
 
 | Step | Code | What it does |
 |---|---|---|
-| Merge batches | `pdf_to_kg.merge` | Folds per-batch JSON into one module; dedupes overlap pages; reattaches blank-title topic continuations |
+| Merge batches | `pdf_to_kg.merge` | Batches in page order; drops what each batch extracted from its overlap pages (`_core_pages`); folds per-batch JSON into one module; reattaches lessons from headless batches to the topic that already has that lesson number, else by lesson-number continuity |
 | Build graph | `pdf_to_kg.combine_modules` / `build_graph` | Deterministic UUID5 nodes and edges; aligns to the CASE standards (`teks_math_case.json`); overrides materials (`real_content.find_real_materials`) and single-node `sourceText` with real page text |
 | Page labels | `backfill_page_labels.apply` | Overwrites every LearningComponent's `pageLabel` with the label printed on its PDF page |
 | Sibling labels | `backfill_sibling_labels.apply` | Fills remaining blank labels from a same-page sibling |

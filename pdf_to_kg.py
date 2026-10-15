@@ -326,18 +326,29 @@ def build_lesson_batches(page_text, lesson_of, max_pages=30, overlap=3):
             units += [unit[:k], unit[k:]]
         else:
             units.append(unit)
-    batches, batch = [], []
+    # Never two topics in one batch: a batch holding the end of Topic D and the start of Topic E
+    # only shows E's heading, and the model filed Topic D's last lesson under E (Grade 3 Module 1
+    # test). A batch with no heading at all is fine -- merge() reattaches its lessons by number.
+    topic_of = lesson_pages.topic_of_pages(page_text, lesson_of)
+
+    def unit_topic(unit):
+        return next((topic_of.get(p) for p in unit if p in tagged), None)
+
+    batches, batch, batch_topic = [], [], None
     for unit in units:
+        topic = unit_topic(unit)
         if len(unit) > max_pages:
             if batch:
                 batches.append(batch)
-                batch = []
             batches += [unit[i:i + max_pages] for i in range(0, len(unit), max_pages)]
-        elif len(batch) + len(unit) > max_pages:
+            batch, batch_topic = [], None
+        elif batch and (len(batch) + len(unit) > max_pages
+                        or (topic and batch_topic and topic != batch_topic)):
             batches.append(batch)
-            batch = list(unit)
+            batch, batch_topic = list(unit), topic
         else:
             batch += unit
+            batch_topic = batch_topic or topic
     if batch:
         batches.append(batch)
     index = {p: i for i, p in enumerate(pages)}
@@ -529,6 +540,26 @@ def _reconcile_blank_topics(topics):
     blank_keys = [k for k, t in topics.items() if not t["title"]]
     for bkey in blank_keys:
         blank = topics[bkey]
+        # 0. LESSON-LEVEL match first: a blank-topic lesson whose number already exists under
+        #    exactly one named topic is that same lesson continuing past a batch edge -- fold it
+        #    there on its own. The whole-topic rules below put a batch's lessons 4-6 under Topic A
+        #    (ends at Lesson 3) when Topic B already held Lesson 4 from the previous batch
+        #    (Grade 3 Module 1 lesson-aligned extraction test).
+        for lkey, lesson in list(blank["lessons"].items()):
+            num = _numeric_label(lesson.get("number"))
+            owners = [t for k, t in named if num is not None
+                      and num in [_numeric_label(l.get("number")) for l in t["lessons"].values()]]
+            if len(owners) == 1:
+                _fold_topic(owners[0], {
+                    "title": "", "sessions": "", "teks": set(), "readiness": set(),
+                    "outcomes": lesson["outcomes"], "page_start_label": "", "page_end_label": "",
+                    "page_start": None, "page_end": None,
+                    "lessons": {next(lk for lk, l in owners[0]["lessons"].items()
+                                     if _numeric_label(l.get("number")) == num): lesson}})
+                del blank["lessons"][lkey]
+        if not blank["lessons"]:  # all reattached (its "outcomes" is just their aggregate)
+            del topics[bkey]
+            continue
         target = None
         if blank["number"]:
             target = next((t for k, t in named if t["number"] == blank["number"]), None)
@@ -553,20 +584,59 @@ def _reconcile_blank_topics(topics):
             del topics[bkey]
 
 
+def _drop_overlap(chunk):
+    """Copy of `chunk` without what it extracted from its leading overlap pages, if the caller
+    recorded its core page range as chunk["_core_pages"] = [first, last]. Overlap pages are sent
+    as context only, but the model extracts them too -- and in a batch that opens a new topic,
+    the previous lesson's last pages then get filed under the NEW topic (Grade 3 Module 1:
+    Lesson 6 showed up under Topic C). The previous batch extracts those pages as its own core,
+    so nothing is lost. Lessons/topics left with no outcomes by this are dropped; ones that never
+    had outcomes (e.g. a TOC listing) are kept."""
+    core = chunk.get("_core_pages")
+    if not core:
+        return chunk
+    first, last = core
+
+    def in_core(page):
+        return page is None or first <= page <= last
+
+    out = dict(chunk)
+    topics = []
+    for t in chunk.get("topics", []):
+        lessons = []
+        for l in t.get("lessons", []):
+            outcomes = [o for o in l.get("learning_outcomes", []) if in_core(o.get("page"))]
+            if l.get("learning_outcomes") and not outcomes:
+                continue
+            lessons.append({**l, "learning_outcomes": outcomes})
+        if t.get("lessons") and not lessons:
+            continue
+        topics.append({**t, "lessons": lessons})
+    out["topics"] = topics
+    out["assessments"] = [a for a in chunk.get("assessments", []) if in_core(a.get("page"))]
+    out["supplementary"] = [s for s in chunk.get("supplementary", []) if in_core(s.get("page"))]
+    return out
+
+
 def merge(chunks):
     """Fold per-batch extractions into one curriculum, deduping by key. Page numbers (`page`/
     `page_start`/`page_end`) are now real, Claude-echoed absolute page numbers -- no more
-    separate pdf-index math needed, just first-non-empty/last-non-empty folding same as labels."""
+    separate pdf-index math needed, just first-non-empty/last-non-empty folding same as labels.
+    A chunk carrying "_core_pages" has its overlap-page content dropped first (_drop_overlap)."""
     module = {"number": "", "title": "", "teks": set()}
     topics, standards, assessments = {}, {}, {}
     supplementary = []
-    for c in chunks:
+    for chunk_index, c in enumerate(chunks):
+        c = _drop_overlap(c)
         if c.get("module_number"):
             module["number"] = c["module_number"]
             module["title"] = module["title"] or c.get("module_title", "")
         module["teks"].update(c.get("module_teks", []))
         for t in c.get("topics", []):
-            key = t["number"] or t["title"]
+            # A batch that starts mid-topic reports it with no number or title. Each such batch
+            # gets its own key: sharing one "" key pooled every batch's headless lessons into a
+            # single fake topic, which _reconcile_blank_topics() then attached as one unit.
+            key = t["number"] or t["title"] or f"_blank_{chunk_index}"
             cur = topics.setdefault(key, {"number": t["number"], "title": t["title"],
                                           "teks": set(), "readiness": set(),
                                           "sessions": "", "outcomes": [], "lessons": {},
@@ -591,6 +661,12 @@ def merge(chunks):
                                                 "learning_outcomes": t["learning_outcomes"]}]
                                               if t.get("learning_outcomes") else [])
             for l in lessons_in:
+                # the model sometimes echoes the topic itself as a content-less "lesson"
+                # (Grade 3 Module 1: lesson "C" titled "Multiplication Using Units of 2 and 3")
+                if not l.get("learning_outcomes") and (
+                        (l.get("number") and l.get("number") == t.get("number"))
+                        or (l.get("title") and l.get("title") == t.get("title"))):
+                    continue
                 lkey = l.get("number") or l.get("title") or "_default"
                 curl = cur["lessons"].setdefault(lkey, {
                     "number": l.get("number", ""), "title": l.get("title", ""),
@@ -1002,7 +1078,9 @@ def main():
         label = f"pages {first}-{last}"
         print(f"  extracting {label} ...", flush=True)
         try:
-            chunks.append(extract_from_text(client, labeled_text, label))
+            chunk = extract_from_text(client, labeled_text, label)
+            chunk["_core_pages"] = [first, last]  # see _drop_overlap()
+            chunks.append(chunk)
         except Exception as e:
             print(f"    ! batch {label} failed: {e}", file=sys.stderr)
     module, topics, standards, assessments, supplementary = merge(chunks)

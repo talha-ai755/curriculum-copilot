@@ -225,11 +225,16 @@ def build_course_from_batch(state_path, module_pdfs, course_name, out_stem,
             continue
         try:
             chunk = p2k.parse_extraction(entry.result.message)
+            # lets merge() drop what the model extracted from the batch's leading overlap pages
+            chunk["_core_pages"] = [info["first"], info["last"]]
             chunks_by_module[module].append(chunk)
         except Exception as e:
             errors.append((entry.custom_id, f"parse error: {e}"))
 
     for module in modules:
+        # Batch results come back in arbitrary order, and merge() is order-sensitive (first/last
+        # non-empty values win, blank-topic reattachment) -- always merge in page order.
+        chunks_by_module[module].sort(key=lambda c: c["_core_pages"][0])
         print(f"  {module}: {len(chunks_by_module[module])} batches succeeded", file=sys.stderr)
     if errors:
         print(f"  {len(errors)} batch(es) failed:", file=sys.stderr)

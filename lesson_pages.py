@@ -123,6 +123,27 @@ def lesson_ranges(lesson_of):
     return ranges
 
 
+_K5_TOPIC_OPENER = re.compile(r"(?:^|\n)\s*(?:\S{1,6}\s+)?Topic\s+([A-H])\b")
+
+
+def topic_of_pages(page_text, lesson_of):
+    """{pdfPage: topic} -- the topic each page belongs to, carried forward from the last topic
+    marker at or before it: the topic number in a 6-8/Algebra I running header, or a K-5 topic
+    opener page ("21 Topic A: ..." / "Topic A 3 • 1" at the top). Pages before the first marker
+    are absent."""
+    topic_of, current = {}, None
+    for p in sorted(page_text):
+        if p in lesson_of and lesson_of[p][0]:
+            current = lesson_of[p][0]
+        else:
+            m = _K5_TOPIC_OPENER.search((page_text[p] or "").replace("\r", "")[:EDGE])
+            if m and _K5_PAGE.search(page_text[p] or ""):
+                current = m.group(1)
+        if current is not None:
+            topic_of[p] = current
+    return topic_of
+
+
 def lookup(ranges, topic_position, lesson_position):
     """A graph Lesson's range: by (topic, lesson) for per-topic numbering, else by lesson alone
     for K-5's per-module numbering. None if the PDF has no header for it."""

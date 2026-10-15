@@ -22,7 +22,7 @@ Usage:
     python pdf_to_kg.py "Seventh Grade Math Teacher Edition, Volume 1 Module 2 (1).pdf"
     python pdf_to_kg.py mybook.pdf --pages-per-chunk 15 --jurisdiction Texas
 """
-import argparse, json, re, sys, uuid
+import argparse, hashlib, json, re, sys, uuid
 import anthropic
 
 MODEL = "claude-opus-4-8"          # most capable; do not downgrade silently
@@ -867,6 +867,23 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
         base = f"{scope}|{kind}|{key}" if scope else f"{kind}|{key}"
         return "yo:" + str(uuid.uuid5(NS, base))
 
+    used_content_ids = set()
+
+    def content_id(page, *texts):
+        """Stable LearningComponent id from module + page + normalized text -- NOT the item's
+        position in the extracted list (which every re-extraction renumbers). Unchanged content
+        keeps its id across re-extractions, re-batching and repairs that move it to another
+        lesson, so user edits, hand fixes and the version diff keep matching it. Identical
+        text on the same page (rare; merge() already dedups (page, outcome)) gets a suffix."""
+        digest = hashlib.sha1(" ".join(" ".join((t or "").lower().split())
+                                        for t in texts).encode()).hexdigest()[:16]
+        key, n = f"{module['number']}:p{page}:{digest}", 1
+        while key in used_content_ids:
+            n += 1
+            key = f"{module['number']}:p{page}:{digest}:{n}"
+        used_content_ids.add(key)
+        return nid("LearningComponent", key)
+
     def case_uuid(code):
         return str(uuid.uuid5(NS, f"CASE|{framework}|{code}"))
 
@@ -989,7 +1006,8 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
                     resolve(code), "StandardsFrameworkItem", t_key="caseIdentifierUUID",
                     alignmentType="teaches", curriculumAlignmentType="addressing")
             for i, outcome in enumerate(l["outcomes"]):
-                lc_id = nid("LearningComponent", f"{module['number']}:{key}:{lkey}:{i}")
+                lc_id = content_id(outcome.get("page"), outcome.get("outcome", ""),
+                                   outcome.get("source_text", ""))
                 node(lc_id, "LearningComponent", description=outcome["outcome"],
                      sourceText=_resolve_source_text(outcome.get("page"),
                                                       outcome.get("source_text", "")),
@@ -1034,7 +1052,7 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
                   "discourse_questions": "Discourse Questions",
                   "differentiation_strategy": "Differentiation Strategy", "other": ""}
     for i, sup in enumerate(supplementary):
-        supp_id = nid("LearningComponent", f"{module['number']}:supp:{i}")
+        supp_id = content_id(sup.get("page"), sup.get("type", ""), sup.get("text", ""))
         node(supp_id, "LearningComponent", description=sup.get("text", ""),
              sourceText=_resolve_source_text(sup.get("page"), sup.get("text", "")),
              componentRole=_SUPP_ROLE.get(sup.get("type", ""), ""),

@@ -26,6 +26,7 @@ idempotent rather than duplicating points.
 """
 import os
 import time
+import uuid
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
@@ -195,13 +196,141 @@ def index_nodes(client, openai_client, nodes, rels=()):
     return len(points)
 
 
-def search(client, openai_client, query, limit=25):
-    """Semantic search over the indexed content (OpenAI-embedded query vector). [] if the
-    collection is empty/missing."""
+_POINT_NS = uuid.uuid5(uuid.NAMESPACE_URL, "https://your-org.example/curriculum/qdrant")
+
+
+def point_id(scope, identifier):
+    """Stable point id for one node in one scope (a base version or a user's view)."""
+    return str(uuid.uuid5(_POINT_NS, f"{scope}|{identifier}"))
+
+
+def _scope_filter(scope):
+    return Filter(must=[FieldCondition(key="scope", match=MatchValue(value=scope))])
+
+
+def tag_scopes(client, scope_by_identifier):
+    """One-time migration for an index built before scopes existed: set each point's `scope`
+    payload from {identifier: scope} -- no re-embedding. Returns the number of points tagged."""
+    if not client.collection_exists(COLLECTION):
+        return 0
+    by_scope, offset = {}, None
+    while True:
+        points, offset = client.scroll(collection_name=COLLECTION, limit=1000, offset=offset,
+                                       with_payload=["identifier", "scope"])
+        for p in points:
+            sc = scope_by_identifier.get(p.payload.get("identifier"))
+            if sc and p.payload.get("scope") != sc:
+                by_scope.setdefault(sc, []).append(p.id)
+        if offset is None:
+            break
+    for sc, ids in by_scope.items():
+        for i in range(0, len(ids), 1000):
+            client.set_payload(collection_name=COLLECTION, payload={"scope": sc},
+                               points=ids[i:i + 1000])
+    return sum(len(v) for v in by_scope.values())
+
+
+def _existing_points(client, identifiers):
+    """{identifier: (vector, combined text)} for already-indexed points (any scope). One
+    payload-only pass maps identifiers to point ids, then the needed points are fetched by id --
+    filtering by identifier in batches made the local client rescan the whole collection per
+    batch (~3 minutes to publish one view; this way seconds)."""
+    wanted, point_ids, offset = set(identifiers), {}, None
+    while wanted:
+        points, offset = client.scroll(collection_name=COLLECTION, limit=5000, offset=offset,
+                                       with_payload=["identifier"], with_vectors=False)
+        for p in points:
+            i = p.payload.get("identifier")
+            if i in wanted and i not in point_ids:
+                point_ids[i] = p.id
+        if offset is None:
+            break
+    out, ids = {}, list(point_ids.values())
+    for k in range(0, len(ids), 500):
+        for p in client.retrieve(COLLECTION, ids=ids[k:k + 500], with_payload=True, with_vectors=True):
+            out.setdefault(p.payload["identifier"], (p.vector, _combined_text(p.payload)))
+    return out
+
+
+def index_scope(client, openai_client, nodes, rels, scope, vector_source=None):
+    """(Re)index one scope -- a base curriculum version or a user's view -- without touching any
+    other: its old points are replaced by one point per LearningComponent/Assessment. Vectors are
+    REUSED from already-indexed points whose text is identical (looked up by
+    `vector_source[identifier]`, e.g. a view node's base node, default the node's own identifier),
+    so only new or edited text costs an embedding call. Returns {"points", "reused", "embedded"}."""
+    if not client.collection_exists(COLLECTION):
+        client.create_collection(COLLECTION, vectors_config=VectorParams(
+            size=OPENAI_EMBED_DIM, distance=Distance.COSINE))
+    vector_source = vector_source or {}
+    parent_name = _parent_names(nodes, rels) if rels else {}
+    docs = []
+    for n in nodes:
+        fields_fn = _CONTENT_FIELDS.get(n["labels"][0])
+        if not fields_fn:
+            continue
+        description, source_text = fields_fn(n["properties"])
+        text = " ".join(x for x in (description, source_text) if x)
+        if not text.strip():
+            continue
+        p = n["properties"]
+        docs.append((n["identifier"], text, {
+            "identifier": n["identifier"], "label": n["labels"][0], "description": description,
+            "source_text": source_text, "parent": parent_name.get(n["identifier"], ""),
+            "page_label": p.get("pageLabel", ""), "pdf_page": p.get("pdfPage"),
+            "lesson_phase": p.get("lessonPhase", ""), "source_pdf_key": p.get("sourcePdfKey", ""),
+            "scope": scope}))
+    # candidates: the node's own earlier point in this scope (a republish) -- fetched directly by
+    # its deterministic point id, which is fast -- then its source node's point (identifier scan)
+    own = {}
+    ids = [point_id(scope, i) for i, _, _ in docs]
+    for k in range(0, len(ids), 500):
+        for p in client.retrieve(COLLECTION, ids=ids[k:k + 500], with_payload=True, with_vectors=True):
+            own[p.payload["identifier"]] = (p.vector, _combined_text(p.payload))
+    need_source = {vector_source.get(i, i) for i, text, _ in docs
+                   if not (own.get(i) and own[i][1] == text)}
+    existing = _existing_points(client, need_source) if need_source else {}
+    vectors, to_embed = {}, []
+    for ident, text, _meta in docs:
+        hit = next((h for h in (own.get(ident), existing.get(vector_source.get(ident, ident)))
+                    if h and h[1] == text), None)
+        if hit:
+            vectors[ident] = hit[0]
+        else:
+            to_embed.append((ident, text))
+    if to_embed:
+        if openai_client is None:
+            raise RuntimeError(f"{len(to_embed)} new/edited texts need embedding but no "
+                               f"OpenAI client is configured")
+        for (ident, _), vec in zip(to_embed, _embed_texts(openai_client, [t for _, t in to_embed])):
+            vectors[ident] = vec
+    client.delete(collection_name=COLLECTION, points_selector=_scope_filter(scope))
+    points = [PointStruct(id=point_id(scope, ident), vector=vectors[ident], payload=meta)
+              for ident, _text, meta in docs]
+    for i in range(0, len(points), _UPSERT_BATCH):
+        for attempt in range(1, _UPSERT_MAX_RETRIES + 1):
+            try:
+                client.upsert(collection_name=COLLECTION, points=points[i:i + _UPSERT_BATCH])
+                break
+            except Exception:
+                if attempt == _UPSERT_MAX_RETRIES:
+                    raise
+                time.sleep(2 ** attempt)
+    return {"points": len(points), "reused": len(points) - len(to_embed), "embedded": len(to_embed)}
+
+
+def delete_scope(client, scope):
+    if client.collection_exists(COLLECTION):
+        client.delete(collection_name=COLLECTION, points_selector=_scope_filter(scope))
+
+
+def search(client, openai_client, query, limit=25, scope=None):
+    """Semantic search over the indexed content (OpenAI-embedded query vector), limited to one
+    curriculum's `scope` when given. [] if the collection is empty/missing."""
     if not client.collection_exists(COLLECTION):
         return []
     query_vector = _embed_texts(openai_client, [query])[0]
-    hits = client.query_points(collection_name=COLLECTION, query=query_vector, limit=limit).points
+    hits = client.query_points(collection_name=COLLECTION, query=query_vector, limit=limit,
+                               query_filter=_scope_filter(scope) if scope else None).points
     return [{"identifier": h.payload["identifier"], "label": h.payload["label"],
              "text": _combined_text(h.payload), "score": h.score,
              "description": h.payload.get("description", ""),

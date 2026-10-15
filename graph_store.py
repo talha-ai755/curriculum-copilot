@@ -121,6 +121,26 @@ def prune_stale(driver, stale_nodes, stale_edges):
                              ids=stale_nodes[i:i + 1000])
 
 
+def delete_scope(driver, scope=None, prefix=None):
+    """Delete every node (and its edges) whose `scope` equals `scope` or starts with `prefix`
+    -- one curriculum version or user view. Shared standards (scope 'framework:...') are never
+    matched by a curriculum or view scope."""
+    where = "n.scope = $v" if scope else "n.scope STARTS WITH $v"
+    while True:
+        records, _, _ = driver.execute_query(
+            f"MATCH (n) WHERE {where} WITH n LIMIT 5000 DETACH DELETE n RETURN count(*) AS c",
+            v=scope or prefix)
+        if not records or records[0]["c"] == 0:
+            break
+
+
+def replace_scope(driver, scope, nodes, rels, prefix=None):
+    """Make Neo4j hold exactly `nodes`/`rels` for this scope: delete the scope (or everything
+    under `prefix`, e.g. all versions of one base curriculum), then load."""
+    delete_scope(driver, scope=None if prefix else scope, prefix=prefix)
+    load_graph(driver, nodes, rels)
+
+
 def schema_description(nodes, rels):
     """Text description of the graph shape for the agent's system prompt — built from the
     in-memory lists already on hand, no extra Neo4j round-trip needed."""

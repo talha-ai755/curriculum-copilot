@@ -268,15 +268,32 @@ AGENT_SYSTEM_TEMPLATE = (
 )
 
 
-def build_system_prompt(schema, pdf_base_url=None):
+CURRICULUM_SECTION = (
+    "\n\n## Active curriculum\n\n"
+    "The user is working in the curriculum \"{name}\" (scope `{scope}`). Answer ONLY from this "
+    "curriculum. Every Course, LessonGrouping, Lesson, LearningComponent and Assessment you MATCH "
+    "must be restricted to it with `scope: $scope` -- the `$scope` query parameter is always "
+    "supplied, e.g. `MATCH (c:Course {{scope: $scope}})-[:hasPart]->(m:LessonGrouping {{scope: "
+    "$scope}})`. Standards (StandardsFramework / StandardsFrameworkItem) are shared by every "
+    "curriculum: never filter them by $scope. semantic_search already returns only this "
+    "curriculum's content. In a user's own curriculum, order modules/topics/lessons by their "
+    "`sequence` property (their position in that curriculum), and `sourceCurriculum` names the "
+    "base curriculum a lesson came from.")
+
+
+def build_system_prompt(schema, pdf_base_url=None, curriculum=None):
     """Fill AGENT_SYSTEM_TEMPLATE's two placeholders with sensible defaults when either input is
     missing, so every caller (app.py, test_question_set.py, ad-hoc scripts) renders the same
-    prompt instead of each reimplementing its own fallback text."""
-    return AGENT_SYSTEM_TEMPLATE.format(
+    prompt instead of each reimplementing its own fallback text. `curriculum` ({"name", "scope"})
+    limits answers to one curriculum (a base version or a user's own)."""
+    prompt = AGENT_SYSTEM_TEMPLATE.format(
         schema=schema or "(Neo4j not loaded — graph_query will error; rely on "
                           "semantic_search instead.)",
         pdf_base_url=pdf_base_url or "(not configured — cite pages as plain text, no links)",
     )
+    if curriculum:
+        prompt += CURRICULUM_SECTION.format(**curriculum)
+    return prompt
 
 TOOLS = [
     {
@@ -324,14 +341,14 @@ TOOLS = [
 ]
 
 
-def run_tool(name, tool_input, driver, qdrant_client, openai_client):
+def run_tool(name, tool_input, driver, qdrant_client, openai_client, scope=None):
     """Dispatch one tool call. Never raises — errors come back as {"error": ...} so the model
     sees them as the tool result and can react (e.g. revise a bad Cypher query itself)."""
     try:
         if name == "graph_query":
             if driver is None:
                 return {"error": "Neo4j is not connected."}
-            return gs.run_cypher(driver, tool_input["cypher"])
+            return gs.run_cypher(driver, tool_input["cypher"], {"scope": scope} if scope else None)
         if name == "semantic_search":
             if qdrant_client is None:
                 return {"error": "Qdrant is not available."}
@@ -339,7 +356,7 @@ def run_tool(name, tool_input, driver, qdrant_client, openai_client):
                 return {"error": "OPENAI_API_KEY not set — semantic_search needs it to embed "
                                  "the query (the index was built with OpenAI embeddings)."}
             return si.search(qdrant_client, openai_client, tool_input["query"],
-                              tool_input.get("limit", 25))
+                              tool_input.get("limit", 25), scope=scope)
         if name == "get_content":
             if qdrant_client is None:
                 return {"error": "Qdrant is not available."}
@@ -350,7 +367,7 @@ def run_tool(name, tool_input, driver, qdrant_client, openai_client):
 
 
 def answer_with_tools(client, system, question, driver, qdrant_client, openai_client,
-                       max_turns=10):
+                       max_turns=10, scope=None):
     """Bounded Claude tool-use loop: the model decides itself whether/how many times to call
     graph_query, semantic_search, and get_content. Returns (answer_text, transcript) where
     transcript is a list of {"tool", "input", "result"} for display."""
@@ -384,7 +401,7 @@ def answer_with_tools(client, system, question, driver, qdrant_client, openai_cl
         for block in resp.content:
             if block.type != "tool_use":
                 continue
-            result = run_tool(block.name, block.input, driver, qdrant_client, openai_client)
+            result = run_tool(block.name, block.input, driver, qdrant_client, openai_client, scope)
             transcript.append({"tool": block.name, "input": block.input, "result": result})
             tool_results.append({"type": "tool_result", "tool_use_id": block.id,
                                   "content": json.dumps(result, default=str)})

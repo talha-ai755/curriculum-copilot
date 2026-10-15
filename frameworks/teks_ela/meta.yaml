@@ -1,0 +1,7 @@
+# Standards framework descriptor (see frameworks.py).
+name: Texas Essential Knowledge and Skills -- English Language Arts and Reading (Chapter 110)
+subject: ela
+jurisdiction: Texas
+label: TEKS
+case_file: case.json        # official TEKS base (hierarchy only; Learning Commons has no ELA crosswalk)
+source_file: official.json

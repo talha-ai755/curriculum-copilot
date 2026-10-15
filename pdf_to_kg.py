@@ -359,11 +359,15 @@ def build_lesson_batches(page_text, lesson_of, max_pages=30, overlap=3):
         yield core[0], core[-1], labeled_text
 
 
-def text_message_params(labeled_text, page_range_label):
-    """The Messages-API params for one extraction batch — shared by streaming and Batch."""
+def text_message_params(labeled_text, page_range_label, subject_id="math"):
+    """The Messages-API params for one extraction batch — shared by streaming and Batch. The
+    prompt and schema enums come from the subject profile (profiles.py); math = SYSTEM /
+    EXTRACTION_SCHEMA."""
+    import profiles
+    ext = profiles.extraction(subject_id)
     return dict(
-        model=MODEL, max_tokens=16000, thinking={"type": "adaptive"}, system=SYSTEM,
-        output_config={"format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA}},
+        model=MODEL, max_tokens=16000, thinking={"type": "adaptive"}, system=ext["system"],
+        output_config={"format": {"type": "json_schema", "schema": ext["schema"]}},
         messages=[{"role": "user", "content": [
             {"type": "text", "text":
                 f"Extract the curriculum structure from these pages ({page_range_label}):\n\n"
@@ -377,16 +381,18 @@ def parse_extraction(msg):
     return json.loads(text)
 
 
-def extract_from_text(client, labeled_text, page_range_label):
+def extract_from_text(client, labeled_text, page_range_label, subject_id="math"):
     """One structured-extraction call over a page-labeled text batch (interactive/streaming).
     No page-index math needed afterward -- Claude reports real page numbers directly, since
     they were already given inline in labeled_text."""
-    with client.messages.stream(**text_message_params(labeled_text, page_range_label)) as stream:
+    with client.messages.stream(**text_message_params(labeled_text, page_range_label,
+                                                      subject_id)) as stream:
         return parse_extraction(stream.get_final_message())
 
 
 def combine_modules(chunk_lists, jurisdiction, framework, case, course_name=None,
-                     real_materials_list=None, real_pages_list=None, source_pdf_keys=None):
+                     real_materials_list=None, real_pages_list=None, source_pdf_keys=None,
+                     academic_subject="Mathematics", supp_roles=None):
     """Merge several modules' chunk-lists into ONE deduped graph. Each list is the chunks for
     one PDF/module. Shared standards collapse by ID; optionally add a Course that hasPart-links
     every module.
@@ -423,7 +429,8 @@ def combine_modules(chunk_lists, jurisdiction, framework, case, course_name=None
         n, r = build_graph(module, topics, standards, assessments, jurisdiction, framework, case,
                            real_materials=real_materials, real_pages=real_pages,
                            source_pdf_key=source_pdf_key,
-                           scope=course_name or "", supplementary=supplementary)
+                           scope=course_name or "", supplementary=supplementary,
+                           academic_subject=academic_subject, supp_roles=supp_roles)
         for x in n:
             if x["identifier"] not in seen_n:
                 seen_n.add(x["identifier"]); nodes.append(x)
@@ -441,7 +448,7 @@ def combine_modules(chunk_lists, jurisdiction, framework, case, course_name=None
                       "properties": {"identifier": cid, "name": course_name, "provider": PROVIDER,
                                      "author": AUTHOR, "license": LICENSE,
                                      "attributionStatement": ATTRIB, "inLanguage": "en-US",
-                                     "academicSubject": "Mathematics", "curriculumLabel": "Course"}})
+                                     "academicSubject": academic_subject, "curriculumLabel": "Course"}})
         for mid in module_ids:
             rid = str(uuid.uuid5(NS, f"hasPart|{cid}|{mid}"))
             if rid not in seen_r:
@@ -799,7 +806,8 @@ def _fix_backward_range(d):
 
 def build_graph(module, topics, standards, assessments, jurisdiction, framework, case=None,
                 scope="", supplementary=(), real_materials=None, real_pages=None,
-                source_pdf_key=None):
+                source_pdf_key=None,
+                academic_subject="Mathematics", supp_roles=None):
     """Build nodes/edges. If `case` (a loaded CASE file) is given, the standards side is the
     real framework — full descriptions, hierarchy (hasChild), and cross-grade links — and
     lessons attach to those real standard nodes by matching codes. Without it, standards are
@@ -922,7 +930,7 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
         # another course already set -- a positive, observed signal should never be clobbered by
         # another course's mere absence of evidence.
         props = dict(description=stmt or code or "", code=code,
-                     jurisdiction=juris or jurisdiction, academicSubject="Mathematics",
+                     jurisdiction=juris or jurisdiction, academicSubject=academic_subject,
                      caseIdentifierUUID=uid)
         if code in readiness:
             props["readinessStandard"] = "true"
@@ -932,7 +940,7 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
     if case:
         fw_id = case["framework"]["uuid"] or case_uuid("__root__")
         node(fw_id, "StandardsFramework", name=case["framework"]["title"],
-             academicSubject="Mathematics", jurisdiction=jurisdiction, caseIdentifierUUID=fw_id)
+             academicSubject=academic_subject, jurisdiction=jurisdiction, caseIdentifierUUID=fw_id)
         for uid, it in case["by_uuid"].items():          # full framework from the CASE file
             ensure_std(uid, it["code"], it["statement"], it.get("jurisdiction"))
         for atype, o, d, extra in case["assocs"]:         # hierarchy + cross-grade links
@@ -947,7 +955,7 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
     else:
         fw_id = case_uuid("__root__")
         node(fw_id, "StandardsFramework", name=f"{framework} Standards",
-             academicSubject="Mathematics", jurisdiction=jurisdiction, caseIdentifierUUID=fw_id)
+             academicSubject=academic_subject, jurisdiction=jurisdiction, caseIdentifierUUID=fw_id)
 
     def resolve(code):
         """PDF code -> standard node's caseIdentifierUUID (real if in CASE, else synthesized)."""
@@ -965,7 +973,7 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
     mod_id = nid("Module", module["number"] or module["title"] or "module")
     node(mod_id, "LessonGrouping", name=module["title"], groupName="Module",
          groupLevel="0", ordinalName=f"Module {module['number']}", position=module["number"],
-         academicSubject="Mathematics", curriculumLabel="Module")
+         academicSubject=academic_subject, curriculumLabel="Module")
     for code in sorted(module["teks"]):
         rel("hasEducationalAlignment", mod_id, "LessonGrouping",
             resolve(code), "StandardsFrameworkItem", t_key="caseIdentifierUUID",
@@ -976,7 +984,7 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
         top_id = nid("Topic", f"{module['number']}:{key}")
         node(top_id, "LessonGrouping", name=t["title"], groupName="Topic",
              groupLevel="1", ordinalName=f"Topic {t['number']}", position=t["number"],
-             academicSubject="Mathematics", curriculumLabel="Topic",
+             academicSubject=academic_subject, curriculumLabel="Topic",
              pageStartLabel=t.get("page_start_label", ""), pageEndLabel=t.get("page_end_label", ""),
              pdfPageStart=t.get("page_start"), pdfPageEnd=t.get("page_end"))
         rel("hasPart", mod_id, "LessonGrouping", top_id, "LessonGrouping")
@@ -998,7 +1006,7 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
             materials = materials_for_topic[i] if i < len(materials_for_topic) \
                 else l.get("materials_needed", [])
             node(lesson_id, "Lesson", name=l["title"], ordinalName=f"Lesson {l['number']}",
-                 position=l["number"], academicSubject="Mathematics", curriculumLabel="Lesson",
+                 position=l["number"], academicSubject=academic_subject, curriculumLabel="Lesson",
                  materialsNeeded=materials,
                  pageStartLabel=l.get("page_start_label", ""), pageEndLabel=l.get("page_end_label", ""),
                  pdfPageStart=l.get("page_start"), pdfPageEnd=l.get("page_end"))
@@ -1018,7 +1026,7 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
                      lessonPhase=outcome.get("lesson_phase", ""),
                      pageLabel=outcome.get("page_label", ""), pdfPage=outcome.get("page"),
                      sourcePdfKey=source_pdf_key or "",
-                     academicSubject="Mathematics")
+                     academicSubject=academic_subject)
                 rel("hasPart", lesson_id, "Lesson", lc_id, "LearningComponent")
                 for code in sorted(lesson_teks):
                     rel("supports", lc_id, "LearningComponent",
@@ -1026,7 +1034,7 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
 
     for (name, topic_no), a in assessments.items():
         asm_id = nid("Assessment", f"{module['number']}:{topic_no}:{name}")
-        node(asm_id, "Assessment", name=name, academicSubject="Mathematics",
+        node(asm_id, "Assessment", name=name, academicSubject=academic_subject,
              curriculumLabel="Assessment",
              pageLabel=a.get("page_label", ""), pdfPage=a.get("page"),
              sourcePdfKey=source_pdf_key or "")
@@ -1057,11 +1065,11 @@ def build_graph(module, topics, standards, assessments, jurisdiction, framework,
         supp_id = content_id(sup.get("page"), sup.get("type", ""), sup.get("text", ""))
         node(supp_id, "LearningComponent", description=sup.get("text", ""),
              sourceText=_resolve_source_text(sup.get("page"), sup.get("text", "")),
-             componentRole=_SUPP_ROLE.get(sup.get("type", ""), ""),
+             componentRole=(supp_roles or _SUPP_ROLE).get(sup.get("type", ""), ""),
              isCritical=False, lessonPhase="",
              pageLabel=sup.get("page_label", ""), pdfPage=sup.get("page"),
              sourcePdfKey=source_pdf_key or "",
-             academicSubject="Mathematics")
+             academicSubject=academic_subject)
         topic_no = sup.get("topic_number", "")
         if topic_no and topic_no in topics:
             parent_id = nid("Topic", f"{module['number']}:{topic_no}")

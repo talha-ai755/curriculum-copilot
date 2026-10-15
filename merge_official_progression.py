@@ -63,9 +63,9 @@ def one_grade(gl):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--official", default="teks_math_OFFICIAL.json",
+    ap.add_argument("--official", default="frameworks/teks_math/official.json",
                     help="official Texas Gateway CASE package for the subject")
-    ap.add_argument("--out", default="teks_math_case.json", help="merged framework output")
+    ap.add_argument("--out", default="frameworks/teks_math/case.json", help="merged framework output")
     args = ap.parse_args()
     OFFICIAL, OUT = args.official, args.out
 

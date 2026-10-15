@@ -18,7 +18,7 @@ Usage:  python case_from_graph.py            # -> teks_math_case.json
 import json
 
 CHAPTER = "111."          # Chapter 111 = Mathematics (110=ELA, 112=Sci, 113=SocSt)
-OUT = "teks_math_case.json"
+OUT = "frameworks/teks_math/case.json"
 
 
 def human_code(statement_code, grade_level):

@@ -42,7 +42,7 @@ import anthropic
 
 import pdf_to_kg as p2k
 
-CASE_PATH = "teks_math_case.json"
+CASE_PATH = "frameworks/teks_math/case.json"
 RELEVANT_GRADES = {"6", "7", "8", "A"}
 # TEKS grade -> plausible CC grade-number pool (adjacent bands, since a TEKS standard's nearest
 # CCSS equivalent isn't always the exact same grade number). Algebra I has no CC grade number at

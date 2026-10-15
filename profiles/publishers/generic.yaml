@@ -1,0 +1,3 @@
+# Publisher profile (see profiles.py): no known page-header format.
+name: Other publisher
+header_format: none          # fixed 25-page extraction batches; page ranges from extracted content

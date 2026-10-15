@@ -1,0 +1,14 @@
+# Subject profile (see profiles.py). Fallback for any subject without its own profile.
+name: Other subject
+academic_subject: ""                    # set from the curriculum's subject name at ingest time
+default_framework: ""
+prompt: generic_teacher_edition.txt
+materials_from_pacing_guide: false
+lesson_phases: [introduce, develop, practice, assess]
+supplementary_types:
+  overview: Overview
+  pacing_guide: Pacing Guide
+  assessment_summary: Assessment Summary
+  discussion_questions: Discussion Questions
+  differentiation_strategy: Differentiation Strategy
+  other: ""

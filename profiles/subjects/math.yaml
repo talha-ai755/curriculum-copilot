@@ -1,0 +1,15 @@
+# Subject profile (see profiles.py). Math reproduces the original pipeline exactly.
+name: Mathematics
+academic_subject: Mathematics           # academicSubject on every node
+default_framework: teks_math
+prompt: builtin_math                    # pdf_to_kg.SYSTEM (the proven math teacher-edition prompt)
+materials_from_pacing_guide: true       # real_content.find_real_materials() overrides materials
+lesson_phases: [getting_started, develop, demonstrate, practice, assessment]
+supplementary_types:                    # extraction enum -> componentRole shown to users
+  assessment_summary: Assessment Summary
+  pacing_guide: Pacing Guide
+  self_reflection: Self-Reflection
+  overview: Overview
+  discourse_questions: Discourse Questions
+  differentiation_strategy: Differentiation Strategy
+  other: ""

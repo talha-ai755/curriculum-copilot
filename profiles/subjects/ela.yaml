@@ -1,0 +1,17 @@
+# Subject profile (see profiles.py). Example of a non-math subject.
+name: English Language Arts and Reading
+academic_subject: English Language Arts and Reading
+default_framework: teks_ela
+prompt: generic_teacher_edition.txt
+materials_from_pacing_guide: false
+lesson_phases: [introduce, model, guided_practice, independent_practice, assess]
+supplementary_types:
+  unit_overview: Overview
+  pacing_guide: Pacing Guide
+  anchor_text: Anchor Text
+  vocabulary: Vocabulary
+  writing_task: Writing Task
+  discussion_questions: Discussion Questions
+  differentiation_strategy: Differentiation Strategy
+  assessment_summary: Assessment Summary
+  other: ""

@@ -26,20 +26,20 @@ import sys
 import traceback
 
 import batch_pipeline as bp
+import frameworks
+import profiles
 import registry
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-# Phase 2 replaces this with the frameworks/ registry.
-FRAMEWORK_FILES = {"teks_math": os.path.join(ROOT, "teks_math_case.json")}
-FRAMEWORK_META = {"teks_math": {"jurisdiction": "Texas", "framework": "TEKS"}}
 
 
 def create_base(conn, name, subject, publisher_profile, framework_id, module_pdfs, user,
                 citation_slug=None, curriculum_id=None):
     """Register a base curriculum and its version 1 (draft). `module_pdfs`: {module: pdf path},
     in order. Returns (curriculum_id, version)."""
-    if framework_id not in FRAMEWORK_FILES:
-        raise ValueError(f"unknown framework {framework_id!r}")
+    frameworks.get(framework_id)   # raises for an unknown framework
+    if publisher_profile not in profiles.publishers():
+        raise ValueError(f"unknown publisher profile {publisher_profile!r}")
     curriculum_id = curriculum_id or registry.slugify(name)
     if registry.get_curriculum(conn, curriculum_id):
         raise ValueError(f"curriculum {curriculum_id!r} already exists -- add a version instead")
@@ -61,12 +61,14 @@ def submit(conn, curriculum_id, version, user, only=None):
     """Submit the version's modules to the Batch API -- all batches, or just `only`
     ({module: {(first, last), ...}}, from plan_update()). Returns the job id."""
     module_pdfs = registry.module_pdfs(conn, curriculum_id, version)
+    cur = registry.get_curriculum(conn, curriculum_id)
     job_id = registry.create_job(conn, "ingest", curriculum_id, version, user)
     os.makedirs(registry.version_dir(curriculum_id, version), exist_ok=True)
     batch_id = bp.submit_course_batch(f"{curriculum_id}-v{version}", module_pdfs,
                                       _state_path(curriculum_id, version),
                                       custom_id_prefix=f"{curriculum_id[:20]}-v{version}-",
-                                      only=only)
+                                      only=only, subject_id=cur["subject"],
+                                      header_format=profiles.header_format(cur["publisher_profile"]))
     registry.update_job(conn, job_id, batch_id=batch_id or "", state="submitted")
     registry.set_version(conn, curriculum_id, version, status="extracting")
     conn.commit()
@@ -84,6 +86,7 @@ def plan_update(conn, curriculum_id, new_pdfs):
     prev = registry.latest_ready(conn, curriculum_id)
     if not prev:
         raise ValueError(f"{curriculum_id} has no ready version to update")
+    hf = profiles.header_format(registry.get_curriculum(conn, curriculum_id)["publisher_profile"])
     prev_mods = {m["module"]: m for m in registry.modules(conn, curriculum_id, prev["version"])}
     out, calls = {}, 0
     for module in list(prev_mods) + [m for m in new_pdfs if m not in prev_mods]:
@@ -93,13 +96,13 @@ def plan_update(conn, curriculum_id, new_pdfs):
                  if old and old["extraction_dir"] else [])
         new_sha = registry.sha256_file(new_pdf)
         new_pt = p2k.pdfium_page_text(new_pdf)
-        _, new_lo = lesson_pages.scan_pdf(new_pdf)
+        _, new_lo = lesson_pages.scan_pdf(new_pdf, hf)
         if old and new_sha == old["pdf_sha256"] and saved:
             report = {"status": "unchanged", "reuse_all": True,
                       "batches_to_extract": [], "batches_reused": len(saved)}
         else:
             old_pt = p2k.pdfium_page_text(old["pdf_path"]) if old else {}
-            old_lo = lesson_pages.scan_pdf(old["pdf_path"])[1] if old else {}
+            old_lo = lesson_pages.scan_pdf(old["pdf_path"], hf)[1] if old else {}
             report = changes.plan_module_update(old_pt, new_pt, new_lo, old_lo, saved)
             report["status"] = ("new module" if not old else "unchanged PDF, no saved chunks"
                                 if new_sha == old["pdf_sha256"] else "changed")
@@ -159,10 +162,15 @@ def build(conn, curriculum_id, version, job_id=None):
         bp.save_chunks(fresh, extraction_root)
         chunks = {m: sorted(reused[m] + fresh[m], key=lambda c: c["_core_pages"][0])
                   for m in module_pdfs}
-        meta = FRAMEWORK_META[cur["framework_id"]]
+        fw = frameworks.get(cur["framework_id"])
+        subj = profiles.subject(cur["subject"])
         bp.build_course(chunks, module_pdfs, cur["name"], ver["nodes_path"], ver["rels_path"],
-                        course_slug=cur["citation_slug"], jurisdiction=meta["jurisdiction"],
-                        framework=meta["framework"], case_path=FRAMEWORK_FILES[cur["framework_id"]])
+                        course_slug=cur["citation_slug"], jurisdiction=fw["jurisdiction"],
+                        framework=fw["label"], case_path=fw["case_path"],
+                        academic_subject=subj["academic_subject"] or cur["subject"],
+                        supp_roles=profiles.extraction(cur["subject"])["supp_roles"],
+                        materials_from_pacing_guide=subj["materials_from_pacing_guide"],
+                        header_format=profiles.header_format(cur["publisher_profile"]))
         notes = (f"{sum(len(c) for c in fresh.values())} batches extracted, "
                  f"{sum(len(c) for c in reused.values())} reused")
         if errors:

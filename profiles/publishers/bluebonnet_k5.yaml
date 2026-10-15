@@ -1,0 +1,3 @@
+# Publisher profile (see profiles.py): how to read this publisher's page headers.
+name: Bluebonnet Learning (K-5)
+header_format: bluebonnet    # lesson_pages.py: running headers -> lesson-aligned batches + page ranges

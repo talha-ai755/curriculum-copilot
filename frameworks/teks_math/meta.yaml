@@ -1,0 +1,7 @@
+# Standards framework descriptor (see frameworks.py).
+name: Texas Essential Knowledge and Skills -- Mathematics (Chapter 111)
+subject: math
+jurisdiction: Texas
+label: TEKS                 # framework name used in standards identifiers (pdf_to_kg.build_graph)
+case_file: case.json        # official TEKS base + Learning Commons crosswalk/progression (merge_official_progression.py)
+source_file: official.json  # official Texas Gateway CASE package (regeneration source)

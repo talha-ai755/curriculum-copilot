@@ -108,7 +108,7 @@ def _lesson_descendants(node_id, children_of, by_id):
     return out
 
 
-def apply(nodes, rels, module_pdfs=None):
+def apply(nodes, rels, module_pdfs=None, header_format="bluebonnet"):
     """Recompute pageStartLabel/pageEndLabel/pdfPageStart/pdfPageEnd on every Lesson/LessonGrouping
     in `nodes`, for the ONE course `nodes`/`rels` belong to. Mutates `nodes` in place. Returns a
     stats dict (includes up to 15 sample diffs for logging).
@@ -138,7 +138,7 @@ def apply(nodes, rels, module_pdfs=None):
     if module_pdfs:
         for module_name, pdf_path in module_pdfs.items():
             print(f"  reading {module_name} running headers...", file=sys.stderr)
-            page_labels[module_name], lesson_of = lesson_pages.scan_pdf(pdf_path)
+            page_labels[module_name], lesson_of = lesson_pages.scan_pdf(pdf_path, header_format)
             header_ranges[module_name] = lesson_pages.lesson_ranges(lesson_of)
         node_module = module_of_each_node(nodes, rels)
 

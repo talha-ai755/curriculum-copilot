@@ -32,7 +32,7 @@ import real_content as rc
 load_dotenv()  # reads .env into os.environ if present -- ANTHROPIC_API_KEY, etc, so ingest.py
 # works standalone without the shell exporting the key; app.py does the same for Streamlit.
 
-CASE_PATH = os.path.join(os.path.dirname(__file__), "teks_math_case.json")
+CASE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frameworks", "teks_math", "case.json")
 # Renamed from the old /tmp/docling_cache -- deliberately a fresh path, not just a fresh dir under
 # the old name: any pre-existing /tmp/docling_cache/*.json is docling-sourced (pre-dates the
 # pypdfium2 switch) and must NOT be picked up as a cache hit by cached_page_text() below, or a
@@ -95,7 +95,8 @@ def cached_page_text(module_name, pdf_path, cache_tag):
     return page_text
 
 
-def submit_course_batch(cache_tag, modules, state_path, custom_id_prefix="", only=None):
+def submit_course_batch(cache_tag, modules, state_path, custom_id_prefix="", only=None,
+                        subject_id="math", header_format="bluebonnet"):
     """Extract every module PDF's page text via pypdfium2 (pdf_to_kg.pdfium_page_text() -- NOT
     docling, see cached_page_text()'s docstring for why), batch pages, and submit ONE Batch API
     call spanning all modules. Saves batch id + custom_id -> (module, first, last) map to
@@ -125,7 +126,7 @@ def submit_course_batch(cache_tag, modules, state_path, custom_id_prefix="", onl
         # Batch edges on lesson boundaries (running headers), not every 25 pages -- see
         # pdf_to_kg.build_lesson_batches(). max_pages=30 keeps batches no bigger on average than
         # the old 25-page windows (22.5 vs 24.1 pages), so output-token headroom is unchanged.
-        _labels, lesson_of = lesson_pages.scan_pdf(pdf_path)
+        _labels, lesson_of = lesson_pages.scan_pdf(pdf_path, header_format)
         for first, last, labeled_text in p2k.build_lesson_batches(page_text, lesson_of,
                                                                   max_pages=30):
             if only is not None and (first, last) not in only[module_name]:
@@ -133,7 +134,8 @@ def submit_course_batch(cache_tag, modules, state_path, custom_id_prefix="", onl
             custom_id = f"{custom_id_prefix}{module_name.replace(' ', '')}_{first}_{last}"
             requests.append({
                 "custom_id": custom_id,
-                "params": p2k.text_message_params(labeled_text, f"pages {first}-{last}"),
+                "params": p2k.text_message_params(labeled_text, f"pages {first}-{last}",
+                                                  subject_id),
             })
             custom_id_map[custom_id] = {"module": module_name, "first": first, "last": last}
 
@@ -247,7 +249,9 @@ def collect_batch_chunks(state_path, modules):
 
 
 def build_course(chunks_by_module, module_pdfs, course_name, nodes_path, rels_path, course_slug,
-                 jurisdiction="Texas", framework="TEKS", case_path=CASE_PATH):
+                 jurisdiction="Texas", framework="TEKS", case_path=CASE_PATH,
+                 academic_subject="Mathematics", supp_roles=None, materials_from_pacing_guide=True,
+                 header_format="bluebonnet"):
     """Merge extraction chunks ({module: [chunk, ...]}, from a batch and/or saved chunks) and build
     the Course graph -- materials_needed overridden with real_content.find_real_materials() and
     sourceText overridden with real page text via pypdfium2 (p2k.pdfium_page_text() -- NOT
@@ -263,7 +267,8 @@ def build_course(chunks_by_module, module_pdfs, course_name, nodes_path, rels_pa
           file=sys.stderr)
     real_materials_list = []
     for module in modules:
-        materials = rc.find_real_materials(module_pdfs[module])
+        # math teacher editions print a per-lesson "Materials Needed" Pacing Guide line
+        materials = rc.find_real_materials(module_pdfs[module]) if materials_from_pacing_guide else {}
         n_lessons = sum(len(v) for v in materials.values())
         print(f"  {module}: {len(materials)} topic(s), {n_lessons} lesson materials lists",
               file=sys.stderr)
@@ -284,7 +289,8 @@ def build_course(chunks_by_module, module_pdfs, course_name, nodes_path, rels_pa
                                        course_name=course_name,
                                        real_materials_list=real_materials_list,
                                        real_pages_list=real_pages_list,
-                                       source_pdf_keys=source_pdf_keys)
+                                       source_pdf_keys=source_pdf_keys,
+                                       academic_subject=academic_subject, supp_roles=supp_roles)
 
     n_lc = sum(1 for n in nodes if n["labels"][0] == "LearningComponent")
     n_supp = sum(1 for n in nodes if n["labels"][0] == "LearningComponent"
@@ -313,7 +319,7 @@ def build_course(chunks_by_module, module_pdfs, course_name, nodes_path, rels_pa
     print("  rescuing blanks from same-page siblings...", file=sys.stderr)
     apply_sibling_labels(nodes, rels)
     print("  recomputing Lesson/LessonGrouping page ranges (running headers)...", file=sys.stderr)
-    apply_page_rollups(nodes, rels, module_pdfs)
+    apply_page_rollups(nodes, rels, module_pdfs, header_format)
     # The structural repairs used to be run by hand with --write on the built files, so a rebuild
     # silently dropped them. All three are idempotent (no-ops on an already-repaired course,
     # verified on every course in data/), so they run on every build. They need the page ranges
@@ -327,7 +333,7 @@ def build_course(chunks_by_module, module_pdfs, course_name, nodes_path, rels_pa
     fix_multi_parent_nodes.apply(nodes, rels,
                                  fix_multi_parent_nodes.RESOLUTIONS.get(os.path.relpath(nodes_path), []))
     print("  recomputing page ranges after repairs...", file=sys.stderr)
-    apply_page_rollups(nodes, rels, module_pdfs)
+    apply_page_rollups(nodes, rels, module_pdfs, header_format)
     print("  precomputing Module/Topic citation targets...", file=sys.stderr)
     apply_topic_citation(nodes, rels)
     # Detection-only safety nets -- never block the build: the right fix for each needs a person

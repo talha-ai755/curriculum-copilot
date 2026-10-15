@@ -54,12 +54,16 @@ def _norm_num(value):
 
 
 @functools.lru_cache(maxsize=None)
-def scan_pdf(pdf_path):
+def scan_pdf(pdf_path, header_format="bluebonnet"):
     """({pdfPage: printed label}, {pdfPage: (topic, lesson)}) for one module PDF. `topic` is ""
     for K-5 headers, which number lessons per module rather than per topic. Cached per process:
     the build calls this before and after its structural repairs. Callers must not mutate the
-    returned dicts."""
+    returned dicts. `header_format` comes from the publisher profile (profiles.py): 'bluebonnet'
+    reads the formats below; 'none' (unknown publisher) returns nothing, so callers fall back to
+    fixed-size batches and content-based page ranges."""
     labels, lesson_of = {}, {}
+    if header_format != "bluebonnet":
+        return labels, lesson_of
     k5_pages, offset_votes = [], {}
     doc = pdfium.PdfDocument(pdf_path)
     try:

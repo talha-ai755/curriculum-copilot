@@ -193,9 +193,7 @@ def _wait_for_batch(client, batch_id):
 def build_course_from_batch(state_path, module_pdfs, course_name, out_stem,
                              jurisdiction="Texas", framework="TEKS", case_path=CASE_PATH):
     """Poll the batch saved at `state_path`, collect results per module, merge, and build the
-    Course graph -- materials_needed overridden with real_content.find_real_materials() and
-    sourceText overridden with real page text via pypdfium2 (p2k.pdfium_page_text() -- NOT
-    docling; see build_graph()'s docstring for why), same as the proven g8/Algebra I pipeline.
+    Course graph (collect_batch_chunks() + build_course()).
 
     `module_pdfs`: {module name: pdf path}, same dict the submit step used (order is the order
     modules get combined/hasPart-linked in).
@@ -203,8 +201,36 @@ def build_course_from_batch(state_path, module_pdfs, course_name, out_stem,
     "grade6" (its basename) becomes the course_slug half of every node's citation.pdf_key_for_
     module() key -- e.g. "grade6/Module 1.pdf" -- so it must stay stable for a course once chosen
     (rebuilding under a different out_stem changes every node's citation key)."""
-    modules = list(module_pdfs.keys())
+    chunks_by_module, _errors = collect_batch_chunks(state_path, list(module_pdfs))
+    return build_course(chunks_by_module, module_pdfs, course_name,
+                        f"{out_stem}_nodes.jsonl", f"{out_stem}_relationships.jsonl",
+                        course_slug=os.path.basename(out_stem), jurisdiction=jurisdiction,
+                        framework=framework, case_path=case_path)
 
+
+def save_chunks(chunks_by_module, extraction_root):
+    """Keep every raw extraction result: <extraction_root>/<module>/chunk_<first>_<last>.json.
+    They are the only way to rebuild a version without paying for extraction again, and a module
+    update reuses the saved chunks of every page that didn't change."""
+    for module, chunks in chunks_by_module.items():
+        mdir = os.path.join(extraction_root, module.replace(" ", "_"))
+        os.makedirs(mdir, exist_ok=True)
+        for c in chunks:
+            first, last = c["_core_pages"]
+            with open(os.path.join(mdir, f"chunk_{first:04d}_{last:04d}.json"), "w") as f:
+                json.dump(c, f)
+
+
+def load_saved_chunks(extraction_root, module):
+    """Saved chunks of one module, in page order (see save_chunks())."""
+    mdir = os.path.join(extraction_root, module.replace(" ", "_"))
+    chunks = [json.load(open(p)) for p in glob.glob(os.path.join(mdir, "chunk_*.json"))]
+    return sorted(chunks, key=lambda c: c["_core_pages"][0])
+
+
+def collect_batch_chunks(state_path, modules):
+    """Poll the batch saved at `state_path` until it ends, then ({module: [chunk, ...] in page
+    order}, [(custom_id, error), ...]). Each chunk carries `_core_pages`."""
     with open(state_path) as f:
         state = json.load(f)
     batch_id, custom_id_map = state["batch_id"], state["custom_id_map"]
@@ -240,7 +266,18 @@ def build_course_from_batch(state_path, module_pdfs, course_name, out_stem,
         print(f"  {len(errors)} batch(es) failed:", file=sys.stderr)
         for cid, reason in errors:
             print(f"    {cid}: {reason}", file=sys.stderr)
+    return chunks_by_module, errors
 
+
+def build_course(chunks_by_module, module_pdfs, course_name, nodes_path, rels_path, course_slug,
+                 jurisdiction="Texas", framework="TEKS", case_path=CASE_PATH):
+    """Merge extraction chunks ({module: [chunk, ...]}, from a batch and/or saved chunks) and build
+    the Course graph -- materials_needed overridden with real_content.find_real_materials() and
+    sourceText overridden with real page text via pypdfium2 (p2k.pdfium_page_text() -- NOT
+    docling; see build_graph()'s docstring for why) -- then run the post-processing, repairs and
+    checks and write `nodes_path` / `rels_path`. `course_slug` is the citation-key segment
+    (citation.pdf_key_for_module()) and must stay fixed for a curriculum."""
+    modules = list(module_pdfs.keys())
     case = p2k.load_case(json.load(open(case_path)))
     print(f"Loaded CASE framework: {len(case['by_uuid'])} standards, "
           f"{len(case['assocs'])} links", file=sys.stderr)
@@ -263,7 +300,6 @@ def build_course_from_batch(state_path, module_pdfs, course_name, out_stem,
         print(f"  {module}: {len(pages)} pages", file=sys.stderr)
         real_pages_list.append(pages)
 
-    course_slug = os.path.basename(out_stem)  # "data/grade6" -> "grade6"
     source_pdf_keys = [citation.pdf_key_for_module(course_slug, module_pdfs[m]) for m in modules]
 
     chunk_lists = [chunks_by_module[m] for m in modules]
@@ -298,7 +334,7 @@ def build_course_from_batch(state_path, module_pdfs, course_name, out_stem,
     import repair_duplicate_topics
     from snapshot import snapshot_course
 
-    nodes_path, rels_path = f"{out_stem}_nodes.jsonl", f"{out_stem}_relationships.jsonl"
+    os.makedirs(os.path.dirname(os.path.abspath(nodes_path)), exist_ok=True)
 
     print("  fixing page labels off the real PDFs...", file=sys.stderr)
     apply_page_labels(nodes, rels, module_pdfs)
@@ -338,7 +374,7 @@ def build_course_from_batch(state_path, module_pdfs, course_name, out_stem,
             print(f"  WARNING: {len(cycles)} {edge_type} cycle(s) -- run check_cycles.py for "
                   f"details", file=sys.stderr)
 
-    snapshot_course(nodes_path, f"before-rebuild-{os.path.basename(out_stem)}")
+    snapshot_course(nodes_path, f"before-rebuild-{course_slug}")
     with open(nodes_path, "w") as f:
         for n in nodes:
             f.write(json.dumps(n) + "\n")

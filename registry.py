@@ -21,8 +21,9 @@ import re
 import sqlite3
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+# Both overridable so tests can run against a scratch registry without touching data/app.db.
 DB_PATH = os.environ.get("CURRICULUM_DB", os.path.join(DATA_DIR, "app.db"))
-CURRICULA_DIR = os.path.join(DATA_DIR, "curricula")
+CURRICULA_DIR = os.environ.get("CURRICULUM_FILES", os.path.join(DATA_DIR, "curricula"))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS curricula (
@@ -208,12 +209,17 @@ def module_pdfs(conn, curriculum_id, version):
 def published_courses(conn):
     """{nodes_path: {module: pdf_path}} for the latest ready version of every base curriculum --
     the registry-backed replacement for backfill_page_labels.discover_courses()."""
+    root = os.path.dirname(DATA_DIR)
     out = {}
     for c in list_curricula(conn):
         v = latest_ready(conn, c["id"])
         if v:
-            out[os.path.relpath(v["nodes_path"], os.path.dirname(DATA_DIR))] = \
-                module_pdfs(conn, c["id"], v["version"])
+            path = v["nodes_path"]
+            # repo-relative ('data/grade3_nodes.jsonl') like the pre-registry keys other code
+            # looks up (e.g. fix_multi_parent_nodes.RESOLUTIONS); absolute when outside the repo
+            if os.path.abspath(path).startswith(root + os.sep):
+                path = os.path.relpath(path, root)
+            out[path] = module_pdfs(conn, c["id"], v["version"])
     return out
 
 
